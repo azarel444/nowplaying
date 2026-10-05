@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -29,8 +30,23 @@ class SpectrumSim {
     return 0.35 + 0.65 * math.exp(-d * d);
   }
 
-  void update(double dt, bool playing) {
+  /// [real]: optional frequency bands (0..255 each, [bars] long) from the
+  /// device's audio output. When given, the bars follow it; otherwise the
+  /// simulation runs.
+  void update(double dt, bool playing, {Uint8List? real}) {
     _t += dt;
+
+    if (real != null && real.length >= bars) {
+      _energy = 1.0;
+      for (int i = 0; i < bars; i++) {
+        final v = math.pow(real[i] / 255.0, 0.9).toDouble();
+        final target = 0.03 + 0.97 * v;
+        final rate = target > levels[i] ? 24.0 : 10.0;
+        levels[i] += (target - levels[i]) * math.min(1.0, dt * rate);
+      }
+      return;
+    }
+
     _energy += ((playing ? 1.0 : 0.0) - _energy) * math.min(1.0, dt * 3.0);
 
     final beatPhase = (_t * 2.0) % 1.0; // ~120 bpm

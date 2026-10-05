@@ -19,6 +19,15 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import android.Manifest
+import android.content.pm.PackageManager
+import android.media.audiofx.Visualizer
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import kotlin.math.hypot
+import kotlin.math.log10
+import kotlin.math.pow
 
 class MainActivity : FlutterActivity() {
 
@@ -27,6 +36,10 @@ class MainActivity : FlutterActivity() {
     private var listenerComponent: ComponentName? = null
     private var controller: MediaController? = null
     private var lastTrackKey: String? = null
+
+    private var visualizer: Visualizer? = null
+    private var fftSink: EventChannel.EventSink? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val sessionsListener =
         MediaSessionManager.OnActiveSessionsChangedListener { list -> pick(list) }
@@ -58,6 +71,17 @@ class MainActivity : FlutterActivity() {
                 }
             })
 
+        EventChannel(messenger, "nowplaying/fft").setStreamHandler(
+            object : EventChannel.StreamHandler {
+                override fun onListen(args: Any?, events: EventChannel.EventSink?) {
+                    fftSink = events
+                }
+
+                override fun onCancel(args: Any?) {
+                    fftSink = null
+                }
+            })
+
         MethodChannel(messenger, "nowplaying/control").setMethodCallHandler { call, result ->
             when (call.method) {
                 "playPause" -> {
@@ -69,6 +93,8 @@ class MainActivity : FlutterActivity() {
                 "next" -> { controller?.transportControls?.skipToNext(); result.success(null) }
                 "previous" -> { controller?.transportControls?.skipToPrevious(); result.success(null) }
                 "refresh" -> { refresh(); result.success(null) }
+                "startVisualizer" -> result.success(startVisualizer())
+                "stopVisualizer" -> { stopVisualizer(); result.success(null) }
                 "openAccessSettings" -> { openAccessSettings(); result.success(null) }
                 else -> result.notImplemented()
             }
@@ -200,7 +226,102 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    // ---------------------------------------------------------- visualizer
+
+    /**
+     * Taps the system audio output (session 0) and sends 96 frequency bands
+     * to Flutter. On some Android versions this is blocked or returns
+     * silence; the Flutter side then falls back to the simulated visualizer.
+     */
+    private fun startVisualizer(): String {
+        if (visualizer != null) return "running"
+        if (Build.VERSION.SDK_INT >= 23 &&
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
+            return "permission"
+        }
+        return try {
+            val v = Visualizer(0)
+            v.setEnabled(false)
+            v.setCaptureSize(Visualizer.getCaptureSizeRange()[1])
+            v.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
+                override fun onWaveFormDataCapture(vis: Visualizer?, data: ByteArray?, rate: Int) {}
+                override fun onFftDataCapture(vis: Visualizer?, fft: ByteArray?, rate: Int) {
+                    if (fft != null) handleFft(fft)
+                }
+            }, Visualizer.getMaxCaptureRate(), false, true)
+            v.setEnabled(true)
+            visualizer = v
+            "running"
+        } catch (e: Exception) {
+            "unavailable"
+        }
+    }
+
+    private fun stopVisualizer() {
+        try {
+            visualizer?.setEnabled(false)
+            visualizer?.release()
+        } catch (_: Exception) {}
+        visualizer = null
+    }
+
+    private fun handleFft(fft: ByteArray) {
+        val half = fft.size / 2
+        if (half < 8) return
+        val mag = DoubleArray(half)
+        for (k in 1 until half) {
+            mag[k] = hypot(fft[2 * k].toDouble(), fft[2 * k + 1].toDouble())
+        }
+        val ratio = half * 0.73 // roughly up to 16 kHz
+        val out = ByteArray(BANDS)
+        for (i in 0 until BANDS) {
+            val lo = ratio.pow(i.toDouble() / BANDS)
+            val hi = ratio.pow((i + 1).toDouble() / BANDS)
+            val v = if (hi - lo < 1.0) {
+                val p = (lo + hi) / 2
+                val a = p.toInt().coerceIn(0, half - 1)
+                val f = p - a
+                mag[a] * (1 - f) + mag[minOf(a + 1, half - 1)] * f
+            } else {
+                var m = 0.0
+                for (k in lo.toInt()..minOf(hi.toInt(), half - 1)) m = maxOf(m, mag[k])
+                m
+            }
+            val base = (20.0 * log10(v + 1.0) - 6.0) / 34.0
+            val level = if (base <= 0.0) 0.0 else base * (1.0 + 0.5 * i / (BANDS - 1))
+            out[i] = (level.coerceIn(0.0, 1.0) * 255).toInt().toByte()
+        }
+        mainHandler.post { fftSink?.success(out) }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_AUDIO &&
+            grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) {
+            startVisualizer()
+        }
+    }
+
+    override fun onPause() {
+        stopVisualizer()
+        super.onPause()
+    }
+
+    companion object {
+        private const val BANDS = 96
+        private const val REQ_AUDIO = 4711
+    }
+
     override fun onDestroy() {
+        stopVisualizer()
         detach()
         super.onDestroy()
     }

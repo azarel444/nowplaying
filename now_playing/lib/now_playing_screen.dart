@@ -62,7 +62,8 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     var dt = (elapsed - _last).inMicroseconds / 1e6;
     _last = elapsed;
     dt = dt.clamp(0.0, 0.1).toDouble();
-    sim.update(dt, model.playing);
+    sim.update(dt, model.playing,
+        real: model.realActive ? model.fft : null);
     _tick.value++;
   }
 
@@ -115,7 +116,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 final portrait = h > w * 1.1;
                 return (_theme == 1 && !portrait)
                     ? _sideBySide(w, h)
-                    : _focused(w, h);
+                    : _focused(w, h, portrait);
               }),
             _progressLine(),
             if (_showControls) _controls(),
@@ -179,61 +180,62 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
 
   // ------------------------------------------------------------------- themes
 
-  Widget _focused(double w, double h) {
-    final artSize = math.min(h * 0.42, w * 0.30);
-    final ringSide = artSize * 1.7;
-    return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          SizedBox(
-            width: ringSide,
-            height: ringSide,
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                RepaintBoundary(
-                  child: CustomPaint(
-                    size: Size.square(ringSide),
-                    painter: RingPainter(
-                      sim: sim,
-                      palette: _palette,
-                      innerRadius: artSize * 0.6,
-                      maxLen: artSize * 0.2,
-                      repaint: _tick,
-                    ),
-                  ),
-                ),
-                _artCard(artSize),
-              ],
-            ),
-          ),
-          Transform.translate(
-            offset: Offset(0, -ringSide * 0.07),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: w * 0.7),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _fit(_titleText(h * 0.062), Alignment.center),
-                  SizedBox(height: h * 0.012),
-                  _fit(_artistText(h * 0.026), Alignment.center),
-                ],
+  Widget _focused(double w, double h, bool portrait) {
+    final art = portrait
+        ? math.min(h * 0.36, w * 0.54)
+        : math.min(h * 0.48, w * 0.34);
+    final outer = art * 0.86; // ring radius including the tallest bars
+    final cx = w / 2;
+    final cy = (portrait ? h * 0.07 : h * 0.02) + outer;
+    return Stack(
+      children: [
+        Positioned(
+          left: cx - outer,
+          top: cy - outer,
+          width: outer * 2,
+          height: outer * 2,
+          child: RepaintBoundary(
+            child: CustomPaint(
+              painter: RingPainter(
+                sim: sim,
+                palette: _palette,
+                innerRadius: art * 0.66,
+                maxLen: art * 0.2,
+                repaint: _tick,
               ),
             ),
           ),
-        ],
-      ),
+        ),
+        Positioned(
+          left: cx - art / 2,
+          top: cy - art / 2,
+          width: art,
+          child: _artWithReflection(art),
+        ),
+        Positioned(
+          left: w * 0.1,
+          right: w * 0.1,
+          bottom: h * 0.045,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _fit(_titleText(h * 0.062), Alignment.center),
+              SizedBox(height: h * 0.012),
+              _fit(_artistText(h * 0.026), Alignment.center),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
   Widget _sideBySide(double w, double h) {
-    final artSize = math.min(h * 0.74, w * 0.34);
+    final artSize = math.min(h * 0.6, w * 0.34);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         SizedBox(width: w * 0.07),
-        _artCard(artSize),
+        _artWithReflection(artSize),
         SizedBox(width: w * 0.05),
         Expanded(
           child: Column(
@@ -315,16 +317,39 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
         child: child,
       );
 
+  /// The clipped album image (or a placeholder), keyed so it can crossfade.
+  Widget _artContent(double s) {
+    final art = model.art;
+    final radius = s * 0.07;
+    return ClipRRect(
+      key: ValueKey<Object>(art ?? 'placeholder'),
+      borderRadius: BorderRadius.circular(radius),
+      child: art == null
+          ? Container(
+              width: s,
+              height: s,
+              color: const Color(0xFF111827),
+              child: Icon(Icons.music_note, size: s * 0.35, color: Colors.white24),
+            )
+          : Image.memory(
+              art.bytes,
+              width: s,
+              height: s,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              filterQuality: FilterQuality.high,
+            ),
+    );
+  }
+
   Widget _artCard(double s) {
     final p = _palette;
-    final radius = s * 0.07;
-    final art = model.art;
     return RepaintBoundary(
       child: Container(
         width: s,
         height: s,
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(radius),
+          borderRadius: BorderRadius.circular(s * 0.07),
           border: Border.all(color: p.a.withOpacity(0.85), width: 1.5),
           boxShadow: [
             BoxShadow(
@@ -337,28 +362,80 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 offset: Offset(s * 0.03, 0)),
           ],
         ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(radius),
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 500),
-            child: art == null
-                ? Container(
-                    key: const ValueKey('placeholder'),
-                    color: const Color(0xFF111827),
-                    child: Icon(Icons.music_note,
-                        size: s * 0.35, color: Colors.white24),
-                  )
-                : Image.memory(
-                    art.bytes,
-                    key: ValueKey(art),
-                    width: s,
-                    height: s,
-                    fit: BoxFit.cover,
-                    gaplessPlayback: true,
-                    filterQuality: FilterQuality.high,
-                  ),
-          ),
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 500),
+          child: _artContent(s),
         ),
+      ),
+    );
+  }
+
+  /// Mirrored, fading copy of the art plus a thin contact shadow, so the
+  /// card looks like it is standing on a glass surface.
+  Widget _reflection(double s) {
+    final h = s * 0.28;
+    return SizedBox(
+      width: s,
+      height: h,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: ShaderMask(
+              blendMode: BlendMode.dstIn,
+              shaderCallback: (rect) => const LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0x66FFFFFF), Color(0x00FFFFFF)],
+              ).createShader(rect),
+              child: ClipRect(
+                child: OverflowBox(
+                  alignment: Alignment.topCenter,
+                  minWidth: s,
+                  maxWidth: s,
+                  minHeight: s,
+                  maxHeight: s,
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 500),
+                    child: Transform(
+                      key: ValueKey<Object>(model.art ?? 'placeholder'),
+                      alignment: Alignment.center,
+                      transform: Matrix4.diagonal3Values(1.0, -1.0, 1.0),
+                      child: _artContent(s),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            height: s * 0.06,
+            child: const DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Color(0xA6000000), Color(0x00000000)],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _artWithReflection(double s) {
+    return RepaintBoundary(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _artCard(s),
+          const SizedBox(height: 3),
+          _reflection(s),
+        ],
       ),
     );
   }
@@ -425,9 +502,22 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
               const SizedBox(width: 16),
               AnimatedBuilder(
                 animation: _tick,
-                builder: (context, _) => Text(
-                  '${_fmt(model.positionMs)} / ${_fmt(model.durationMs)}',
-                  style: const TextStyle(color: Colors.white70, fontSize: 16),
+                builder: (context, _) => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${_fmt(model.positionMs)} / ${_fmt(model.durationMs)}',
+                      style: const TextStyle(color: Colors.white70, fontSize: 16),
+                    ),
+                    Text(
+                      model.realActive ? 'live audio' : 'simulated',
+                      style: TextStyle(
+                        color: model.realActive ? _palette.a : Colors.white38,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(width: 8),
