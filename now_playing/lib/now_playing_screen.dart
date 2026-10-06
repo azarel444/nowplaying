@@ -192,6 +192,14 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     _tick.value++;
   }
 
+  Future<void> _openPlayer() async {
+    final r = await model.openPlayer();
+    if (r == null || r == 'ok' || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(r), duration: const Duration(seconds: 3)),
+    );
+  }
+
   void _toggleTheme() {
     settings.update(() => settings.theme = (settings.theme + 1) % 3);
     _poke();
@@ -237,10 +245,12 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
             _background(),
             if (vhs) ..._vhsBackdrop(fx),
             if (settings.bgEffects && settings.particles && heavy)
-              RepaintBoundary(
-                child: CustomPaint(
-                  painter: ParticlesPainter(
-                      field: particles, palette: _palette, repaint: _tick),
+              IgnorePointer(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: ParticlesPainter(
+                        field: particles, palette: _palette, repaint: _tick),
+                  ),
                 ),
               ),
             if (!model.accessGranted)
@@ -248,16 +258,20 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
             else
               LayoutBuilder(builder: (context, box) {
                 final w = box.maxWidth, h = box.maxHeight;
-                final portrait = h > w * 1.1;
+                // Side by Side and VHS switch to a stacked layout (art, bars,
+                // then song info and lyrics) when the screen gets narrow.
+                final narrow = w < h * 1.3;
                 final Widget layout;
                 if (vhs) {
-                  layout = portrait
-                      ? _vhsPortrait(w, h)
+                  layout = narrow
+                      ? _stackedLayout(w, h, vhs: true)
                       : _sideLayout(w, h, vhs: true);
-                } else if (settings.theme == 1 && !portrait) {
-                  layout = _sideLayout(w, h, vhs: false);
+                } else if (settings.theme == 1) {
+                  layout = narrow
+                      ? _stackedLayout(w, h, vhs: false)
+                      : _sideLayout(w, h, vhs: false);
                 } else {
-                  layout = _focused(w, h, portrait);
+                  layout = _focused(w, h);
                 }
                 return Transform.translate(
                   offset: _shift,
@@ -267,8 +281,16 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                   ),
                 );
               }),
-            if (vhs) ..._vhsOverlay(fx, heavy),
-            if (_night) const ColoredBox(color: Color(0x80000000)),
+            // These sit on top of everything, so they must not catch touches.
+            if (vhs)
+              IgnorePointer(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: _vhsOverlay(fx, heavy),
+                ),
+              ),
+            if (_night)
+              const IgnorePointer(child: ColoredBox(color: Color(0x80000000))),
             _progressLine(),
             if (_showControls) _controls(),
           ],
@@ -465,68 +487,102 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
 
   // ------------------------------------------------------------------- themes
 
-  Widget _focused(double w, double h, bool portrait) {
+  /// Ring (or bars) with the art, then song info and the lyric line, all
+  /// stacked as one group that is centered on the screen.
+  Widget _focused(double w, double h) {
+    final portrait = h > w * 1.1;
     final barsMode = settings.vizStyle == 1;
-    var art = portrait
-        ? math.min(h * 0.36, w * 0.54)
-        : math.min(h * 0.48, w * 0.34);
-    if (barsMode) art *= 0.88;
+    final lyricSlot = settings.lyrics ? h * 0.05 : 0.0;
+    final textH = h * 0.115 + lyricSlot; // title + artist (+ lyric slot)
+    final wLimit = portrait ? w * 0.54 : w * 0.34;
+
+    final double art;
+    if (barsMode) {
+      final avail = h * 0.94 - textH - h * 0.12 - h * 0.05; // bars + gaps
+      art = math.min(wLimit, avail / 1.28); // art + reflection
+    } else {
+      final avail = h * 0.94 - textH - h * 0.03;
+      art = math.min(wLimit, avail / 1.72); // ring box is 1.72 x art
+    }
     final outer = art * 0.86; // ring radius including the tallest bars
-    final cx = w / 2;
-    final cy = (portrait ? h * 0.07 : h * 0.02) + outer;
-    return Stack(
-      children: [
-        if (settings.visualizer && !barsMode)
-          Positioned(
-            left: cx - outer,
-            top: cy - outer,
-            width: outer * 2,
-            height: outer * 2,
-            child: RepaintBoundary(
-              child: CustomPaint(
-                painter: RingPainter(
-                  sim: sim,
-                  palette: _palette,
-                  innerRadius: art * 0.66,
-                  maxLen: art * 0.2,
-                  count: settings.barCount,
-                  gain: settings.sensitivity,
-                  repaint: _tick,
+
+    final Widget top;
+    if (barsMode) {
+      top = Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _artWithReflection(art),
+          if (settings.visualizer) ...[
+            SizedBox(height: h * 0.025),
+            SizedBox(width: w * 0.8, child: _bars(h * 0.12)),
+          ],
+          SizedBox(height: h * 0.025),
+        ],
+      );
+    } else {
+      top = SizedBox(
+        width: outer * 2,
+        height: outer * 2,
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            if (settings.visualizer)
+              Positioned.fill(
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: RingPainter(
+                      sim: sim,
+                      palette: _palette,
+                      innerRadius: art * 0.66,
+                      maxLen: art * 0.2,
+                      count: settings.barCount,
+                      gain: settings.sensitivity,
+                      repaint: _tick,
+                    ),
+                  ),
                 ),
               ),
+            Positioned(
+              left: outer - art / 2,
+              top: outer - art / 2,
+              width: art,
+              child: _artWithReflection(art),
             ),
-          ),
-        Positioned(
-          left: cx - art / 2,
-          top: cy - art / 2,
-          width: art,
-          child: _artWithReflection(art),
+          ],
         ),
-        if (settings.visualizer && barsMode)
-          Positioned(
-            left: w * 0.1,
-            right: w * 0.1,
-            bottom: h * 0.16,
-            height: h * 0.12,
-            child: _bars(h * 0.12),
-          ),
-        Positioned(
-          left: w * 0.1,
-          right: w * 0.1,
-          bottom: h * 0.045,
+      );
+    }
+
+    final text = SizedBox(
+      width: w * 0.8,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _title(h * 0.062, Alignment.center, false),
+          SizedBox(height: h * 0.012),
+          _artist(h * 0.026, Alignment.center, false),
+          if (settings.lyrics)
+            SizedBox(
+              height: lyricSlot,
+              child: _hasLyrics
+                  ? Center(child: _lyricLine(h * 0.03, Alignment.center))
+                  : null,
+            ),
+        ],
+      ),
+    );
+
+    return Center(
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: SizedBox(
+          width: w,
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            children: [
-              _title(h * 0.062, Alignment.center, false),
-              SizedBox(height: h * 0.012),
-              if (_hasLyrics)
-                _lyricLine(h * 0.03, Alignment.center)
-              else
-                _artist(h * 0.026, Alignment.center, false),
-            ],
+            children: [top, SizedBox(height: h * 0.03), text],
           ),
         ),
-      ],
+      ),
     );
   }
 
@@ -570,25 +626,39 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     );
   }
 
-  Widget _vhsPortrait(double w, double h) {
-    final s = math.min(h * 0.32, w * 0.54);
-    return Padding(
-      padding: EdgeInsets.symmetric(horizontal: w * 0.08),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          _artWithReflection(s, vhs: true),
-          SizedBox(height: h * 0.03),
-          _title(h * 0.04, Alignment.center, true),
-          SizedBox(height: h * 0.01),
-          _artist(h * 0.018, Alignment.center, true),
-          if (_hasLyrics) ...[
-            SizedBox(height: h * 0.02),
-            _lyricBlock(h * 0.6, Alignment.center, vhs: true),
-          ],
-          SizedBox(height: h * 0.04),
-          _bars(h * 0.14, blocky: true),
-        ],
+  /// Narrow screens: album art on top, the visualizer under it, then song
+  /// info and lyrics. The whole group is centered, and scales down if it
+  /// would not fit.
+  Widget _stackedLayout(double w, double h, {required bool vhs}) {
+    final s = math.min(w * 0.6, h * 0.40);
+    final showAlbum =
+        !vhs && model.album.isNotEmpty && model.album != model.title;
+    return Center(
+      child: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: SizedBox(
+          width: w * 0.84,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _artWithReflection(s, vhs: vhs),
+              SizedBox(height: h * 0.03),
+              _bars(h * 0.11, blocky: vhs),
+              SizedBox(height: h * 0.03),
+              _title(h * 0.05, Alignment.center, vhs),
+              SizedBox(height: h * 0.01),
+              _artist(h * 0.022, Alignment.center, vhs),
+              if (showAlbum) ...[
+                SizedBox(height: h * 0.008),
+                _fit(_albumText(h * 0.02), Alignment.center),
+              ],
+              if (_hasLyrics) ...[
+                SizedBox(height: h * 0.02),
+                _lyricBlock(h * 0.75, Alignment.center, vhs: vhs),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -875,7 +945,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   /// Tapping the cover opens the player app that is playing.
   Widget _front(double s, bool vhs) => GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: model.openPlayer,
+        onTap: _openPlayer,
         child: _pulse(vhs ? _splitArt(s) : _artCard(s)),
       );
 

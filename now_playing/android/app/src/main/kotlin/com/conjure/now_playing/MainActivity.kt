@@ -101,7 +101,7 @@ class MainActivity : FlutterActivity() {
                     controller?.transportControls?.seekTo(ms)
                     result.success(null)
                 }
-                "openPlayer" -> { openPlayer(); result.success(null) }
+                "openPlayer" -> result.success(openPlayer())
                 "openOverlaySettings" -> { openOverlaySettings(); result.success(null) }
                 "setLaunchOptions" -> {
                     val boot = call.argument<Boolean>("boot") ?: false
@@ -233,20 +233,28 @@ class MainActivity : FlutterActivity() {
         return out.toByteArray()
     }
 
-    /** Opens the player app that owns the current media session. */
-    private fun openPlayer() {
-        val c = controller ?: return
+    /**
+     * Opens the player app that owns the current media session.
+     * Returns "ok" or a short message that the screen can show.
+     */
+    private fun openPlayer(): String {
+        val c = controller ?: return "No player is active"
+        val pkg = c.packageName
+        try {
+            val launch = packageManager.getLaunchIntentForPackage(pkg)
+            if (launch != null) {
+                startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return "ok"
+            }
+        } catch (_: Exception) {}
         val pi = c.sessionActivity
         if (pi != null) {
             try {
                 pi.send()
-                return
+                return "ok"
             } catch (_: Exception) {}
         }
-        try {
-            val launch = packageManager.getLaunchIntentForPackage(c.packageName)
-            if (launch != null) startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        } catch (_: Exception) {}
+        return "Could not open $pkg"
     }
 
     /** "Display over other apps" lets the app open itself from the background. */

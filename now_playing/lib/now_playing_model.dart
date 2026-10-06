@@ -228,7 +228,14 @@ class NowPlayingModel extends ChangeNotifier {
   }
 
   Future<void> seekTo(int ms) => _call('seekTo', ms);
-  Future<void> openPlayer() => _call('openPlayer');
+  /// Returns 'ok', or a short message explaining why it could not open.
+  Future<String?> openPlayer() async {
+    try {
+      return await _control.invokeMethod<String>('openPlayer');
+    } catch (_) {
+      return 'Could not open the player';
+    }
+  }
   Future<void> openOverlaySettings() => _call('openOverlaySettings');
 
   /// Tells the Kotlin side whether to launch the app at boot / when music starts.
