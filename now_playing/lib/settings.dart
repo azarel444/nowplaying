@@ -1,0 +1,95 @@
+import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'palette.dart';
+
+/// All user-adjustable options, saved on the device.
+class AppSettings extends ChangeNotifier {
+  static const themeNames = ['Focused', 'Side by Side', 'VHS'];
+  static const accentNames = [
+    'Auto (from art)',
+    'Vaporwave',
+    'Sunset',
+    'Ocean',
+    'Forest',
+    'White',
+  ];
+
+  /// Index 0 (Auto) is null: the colors come from the album art.
+  static const List<ArtPalette?> accents = [
+    null,
+    ArtPalette(Color(0xFF01CDFE), Color(0xFFFF71CE), Color(0xFFB967FF)),
+    ArtPalette(Color(0xFFFF9A5A), Color(0xFFFF5C8A), Color(0xFFD65CFF)),
+    ArtPalette(Color(0xFF00E5FF), Color(0xFF3D8BFF), Color(0xFF7C5CFF)),
+    ArtPalette(Color(0xFF7CFF8A), Color(0xFF00E5B0), Color(0xFFE5FF5C)),
+    ArtPalette(Color(0xFFFFFFFF), Color(0xFFD0D8E8), Color(0xFF9AA8C0)),
+  ];
+
+  /// Used by the VHS theme when the accent is left on Auto.
+  static const vaporwave =
+      ArtPalette(Color(0xFF01CDFE), Color(0xFFFF71CE), Color(0xFFB967FF));
+
+  static const barCounts = [32, 48, 64, 96];
+
+  int theme = 0; // 0 Focused, 1 Side by Side, 2 VHS
+  bool visualizer = true;
+  double sensitivity = 1.0; // 0.5 .. 1.5
+  int vizStyle = 0; // Focused theme: 0 ring, 1 bars
+  int barCount = 96;
+  int accent = 0;
+  double effects = 0.7; // VHS effect strength 0 .. 1
+  bool bgEffects = true; // slow drift + beat pulse
+  bool particles = false;
+  bool performance = false;
+  int night = 1; // 0 off, 1 auto (8pm-6am), 2 always
+  bool burnIn = true;
+
+  ArtPalette? get accentPalette =>
+      (accent > 0 && accent < accents.length) ? accents[accent] : null;
+
+  Future<void> load() async {
+    final p = await SharedPreferences.getInstance();
+    theme = _int(p, 'theme', 0, 0, 2);
+    visualizer = p.getBool('visualizer') ?? true;
+    sensitivity = (p.getDouble('sensitivity') ?? 1.0).clamp(0.5, 1.5).toDouble();
+    vizStyle = _int(p, 'vizStyle', 0, 0, 1);
+    final bc = p.getInt('barCount') ?? 96;
+    barCount = barCounts.contains(bc) ? bc : 96;
+    accent = _int(p, 'accent', 0, 0, accents.length - 1);
+    effects = (p.getDouble('effects') ?? 0.7).clamp(0.0, 1.0).toDouble();
+    bgEffects = p.getBool('bgEffects') ?? true;
+    particles = p.getBool('particles') ?? false;
+    performance = p.getBool('performance') ?? false;
+    night = _int(p, 'night', 1, 0, 2);
+    burnIn = p.getBool('burnIn') ?? true;
+    notifyListeners();
+  }
+
+  int _int(SharedPreferences p, String key, int def, int lo, int hi) {
+    final v = p.getInt(key) ?? def;
+    return (v < lo || v > hi) ? def : v;
+  }
+
+  Future<void> save() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setInt('theme', theme);
+    await p.setBool('visualizer', visualizer);
+    await p.setDouble('sensitivity', sensitivity);
+    await p.setInt('vizStyle', vizStyle);
+    await p.setInt('barCount', barCount);
+    await p.setInt('accent', accent);
+    await p.setDouble('effects', effects);
+    await p.setBool('bgEffects', bgEffects);
+    await p.setBool('particles', particles);
+    await p.setBool('performance', performance);
+    await p.setInt('night', night);
+    await p.setBool('burnIn', burnIn);
+  }
+
+  /// Apply a change, tell listeners, and (by default) save it.
+  void update(VoidCallback change, {bool persist = true}) {
+    change();
+    notifyListeners();
+    if (persist) save();
+  }
+}

@@ -14,6 +14,7 @@ class NowPlayingModel extends ChangeNotifier {
   static const _fftEvents = EventChannel('nowplaying/fft');
 
   bool accessGranted = true; // assume yes until Android says otherwise
+  bool visualizerEnabled = true;
   bool active = false;
   bool playing = false;
   String title = '';
@@ -44,7 +45,7 @@ class NowPlayingModel extends ChangeNotifier {
     _sub = _events.receiveBroadcastStream().listen(_onEvent, onError: (_) {});
     _fftSub =
         _fftEvents.receiveBroadcastStream().listen(_onFft, onError: (_) {});
-    startVisualizer();
+    if (visualizerEnabled) startVisualizer();
   }
 
   void _onFft(dynamic e) {
@@ -130,7 +131,12 @@ class NowPlayingModel extends ChangeNotifier {
   Future<void> previous() => _call('previous');
   Future<void> refresh() async {
     await _call('refresh');
-    await _call('startVisualizer');
+    if (visualizerEnabled) await _call('startVisualizer');
+  }
+
+  void setVisualizer(bool on) {
+    visualizerEnabled = on;
+    _call(on ? 'startVisualizer' : 'stopVisualizer');
   }
 
   Future<void> startVisualizer() => _call('startVisualizer');

@@ -30,7 +30,9 @@
    notification access for Now Playing. Start music in any player.
 
 ## Using it
-- Tap the screen: controls appear for 5 seconds (theme switch, previous, play/pause, next).
+- Tap the screen: controls appear for 5 seconds (theme switch, settings, previous, play/pause, next). A small label shows "live audio" or "simulated" so you can tell which visualizer is running.
+- Themes (the first button cycles them): Focused, Side by Side, VHS.
+- Settings (gear button): visualizer on/off, sensitivity, ring or bars, bar count, accent colors, VHS strength, background drift and beat pulse, particles, performance mode, night mode, burn-in protection.
 - Swipe left/right: next / previous track.
 - The theme you pick is remembered.
 

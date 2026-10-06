@@ -30,6 +30,21 @@ class SpectrumSim {
     return 0.35 + 0.65 * math.exp(-d * d);
   }
 
+  /// Average of the lowest bands, 0..1. Drives the beat pulse and effects.
+  double get bass {
+    var sum = 0.0;
+    for (int i = 0; i < 8; i++) {
+      sum += levels[i];
+    }
+    return sum / 8;
+  }
+
+  /// Level of band [i] with the sensitivity [gain] applied.
+  double level(int i, double gain) {
+    final v = 0.03 + (levels[i] - 0.03) * gain;
+    return v.clamp(0.0, 1.0).toDouble();
+  }
+
   /// [real]: optional frequency bands (0..255 each, [bars] long) from the
   /// device's audio output. When given, the bars follow it; otherwise the
   /// simulation runs.
@@ -74,54 +89,77 @@ class SpectrumSim {
 
 /// Circular ring of bars that wraps around the album art. Open at the
 /// bottom so the title can sit underneath.
+///
+/// Cheaper than before: no glow pass (half the draw calls), and the angles
+/// and colors are worked out once instead of every frame.
 class RingPainter extends CustomPainter {
   final SpectrumSim sim;
   final ArtPalette palette;
   final double innerRadius;
   final double maxLen;
+  final int count;
+  final double gain;
+
+  List<double>? _cos;
+  List<double>? _sin;
+  List<int>? _idx;
+  List<Color>? _colors;
 
   RingPainter({
     required this.sim,
     required this.palette,
     required this.innerRadius,
     required this.maxLen,
+    required this.count,
+    required this.gain,
     required Listenable repaint,
   }) : super(repaint: repaint);
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    final c = size.center(Offset.zero);
-    const count = SpectrumSim.bars;
+  void _prepare() {
+    if (_cos != null) return;
     const gap = 0.30;
     const start = math.pi / 2 + gap;
     const sweep = 2 * math.pi - 2 * gap;
-    final width = innerRadius * 0.045;
+    final cs = List<double>.filled(count, 0.0);
+    final sn = List<double>.filled(count, 0.0);
+    final ix = List<int>.filled(count, 0);
+    final cl = List<Color>.filled(count, Colors.white);
+    for (int i = 0; i < count; i++) {
+      final f = count > 1 ? i / (count - 1) : 0.0;
+      final ang = start + sweep * f;
+      final u = (f - 0.5).abs() * 2; // 0 at top, 1 at the bottom ends
+      cs[i] = math.cos(ang);
+      sn[i] = math.sin(ang);
+      ix[i] = (u * (SpectrumSim.bars - 1)).round();
+      cl[i] = palette.at((1 + math.cos(ang)) / 2);
+    }
+    _cos = cs;
+    _sin = sn;
+    _idx = ix;
+    _colors = cl;
+  }
 
-    final glow = Paint()
-      ..strokeCap = StrokeCap.round
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = width * 2.4;
+  @override
+  void paint(Canvas canvas, Size size) {
+    _prepare();
+    final cs = _cos!, sn = _sin!, ix = _idx!, cl = _colors!;
+    final c = size.center(Offset.zero);
+    final width = innerRadius * 0.045 * math.sqrt(SpectrumSim.bars / count);
+
     final bar = Paint()
       ..strokeCap = StrokeCap.round
       ..style = PaintingStyle.stroke
       ..strokeWidth = width;
 
     for (int i = 0; i < count; i++) {
-      final f = i / (count - 1);
-      final ang = start + sweep * f;
-      final u = (f - 0.5).abs() * 2; // 0 at top, 1 at the bottom ends
-      final level = sim.levels[(u * (count - 1)).round()];
-      final len = width + maxLen * level;
-
-      final dir = Offset(math.cos(ang), math.sin(ang));
-      final p1 = c + dir * innerRadius;
-      final p2 = c + dir * (innerRadius + len);
-      final color = palette.at((1 + math.cos(ang)) / 2);
-
-      glow.color = color.withOpacity(0.16);
-      bar.color = color;
-      canvas.drawLine(p1, p2, glow);
-      canvas.drawLine(p1, p2, bar);
+      final len = width + maxLen * sim.level(ix[i], gain);
+      bar.color = cl[i];
+      canvas.drawLine(
+        Offset(c.dx + cs[i] * innerRadius, c.dy + sn[i] * innerRadius),
+        Offset(c.dx + cs[i] * (innerRadius + len),
+            c.dy + sn[i] * (innerRadius + len)),
+        bar,
+      );
     }
   }
 
@@ -129,31 +167,41 @@ class RingPainter extends CustomPainter {
   bool shouldRepaint(RingPainter old) =>
       old.palette != palette ||
       old.innerRadius != innerRadius ||
-      old.maxLen != maxLen;
+      old.maxLen != maxLen ||
+      old.count != count ||
+      old.gain != gain;
 }
 
 /// Horizontal spectrum with a soft reflection underneath.
 class BarsPainter extends CustomPainter {
   final SpectrumSim sim;
   final ArtPalette palette;
+  final int count;
+  final double gain;
+
+  /// Wide square-ended bars (used by the VHS theme).
+  final bool blocky;
 
   BarsPainter({
     required this.sim,
     required this.palette,
+    required this.count,
+    required this.gain,
+    this.blocky = false,
     required Listenable repaint,
   }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
-    const n = SpectrumSim.bars;
+    final n = count;
     final barsH = size.height * 0.72;
     final baseY = barsH;
     final step = size.width / n;
-    final bw = step * 0.42;
+    final bw = step * (blocky ? 0.68 : 0.42);
     final rect = Rect.fromLTWH(0, 0, size.width, size.height);
 
     final bar = Paint()
-      ..strokeCap = StrokeCap.round
+      ..strokeCap = blocky ? StrokeCap.butt : StrokeCap.round
       ..strokeWidth = bw
       ..shader = LinearGradient(colors: palette.colors).createShader(rect);
     final refl = Paint()
@@ -164,8 +212,9 @@ class BarsPainter extends CustomPainter {
       ).createShader(rect);
 
     for (int i = 0; i < n; i++) {
+      final idx = n > 1 ? (i * (SpectrumSim.bars - 1) / (n - 1)).round() : 0;
       final x = step * (i + 0.5);
-      final h = math.max(bw, sim.levels[i] * barsH);
+      final h = math.max(bw, sim.level(idx, gain) * barsH);
       canvas.drawLine(Offset(x, baseY), Offset(x, baseY - h), bar);
 
       final rh = math.min(h * 0.4, size.height - baseY - 2);
@@ -176,5 +225,9 @@ class BarsPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(BarsPainter old) => old.palette != palette;
+  bool shouldRepaint(BarsPainter old) =>
+      old.palette != palette ||
+      old.count != count ||
+      old.gain != gain ||
+      old.blocky != blocky;
 }
