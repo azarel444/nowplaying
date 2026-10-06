@@ -96,6 +96,22 @@ class MainActivity : FlutterActivity() {
                 "startVisualizer" -> result.success(startVisualizer())
                 "stopVisualizer" -> { stopVisualizer(); result.success(null) }
                 "openAccessSettings" -> { openAccessSettings(); result.success(null) }
+                "seekTo" -> {
+                    val ms = (call.arguments as? Number)?.toLong() ?: 0L
+                    controller?.transportControls?.seekTo(ms)
+                    result.success(null)
+                }
+                "openPlayer" -> { openPlayer(); result.success(null) }
+                "openOverlaySettings" -> { openOverlaySettings(); result.success(null) }
+                "setLaunchOptions" -> {
+                    val boot = call.argument<Boolean>("boot") ?: false
+                    val music = call.argument<Boolean>("music") ?: false
+                    getSharedPreferences("np_prefs", Context.MODE_PRIVATE).edit()
+                        .putBoolean("openOnBoot", boot)
+                        .putBoolean("openOnMusic", music)
+                        .apply()
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -217,6 +233,32 @@ class MainActivity : FlutterActivity() {
         return out.toByteArray()
     }
 
+    /** Opens the player app that owns the current media session. */
+    private fun openPlayer() {
+        val c = controller ?: return
+        val pi = c.sessionActivity
+        if (pi != null) {
+            try {
+                pi.send()
+                return
+            } catch (_: Exception) {}
+        }
+        try {
+            val launch = packageManager.getLaunchIntentForPackage(c.packageName)
+            if (launch != null) startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (_: Exception) {}
+    }
+
+    /** "Display over other apps" lets the app open itself from the background. */
+    private fun openOverlaySettings() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (_: Exception) {}
+    }
+
     private fun openAccessSettings() {
         try {
             startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS")
@@ -310,12 +352,21 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        visible = true
+    }
+
     override fun onPause() {
+        visible = false
         stopVisualizer()
         super.onPause()
     }
 
     companion object {
+        @Volatile
+        var visible = false
+
         private const val BANDS = 96
         private const val REQ_AUDIO = 4711
     }

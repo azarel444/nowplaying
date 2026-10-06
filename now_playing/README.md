@@ -9,7 +9,8 @@
    - `pubspec.yaml`
    - `lib/` (replace the whole folder)
    - `android/app/src/main/AndroidManifest.xml`
-   - `android/app/src/main/kotlin/com/conjure/now_playing/` (MainActivity.kt + MediaListenerService.kt)
+   - `android/app/src/main/kotlin/com/conjure/now_playing/` (MainActivity.kt, MediaListenerService.kt, BootReceiver.kt)
+   - `android/app/src/main/res/mipmap-*` (the app icon)
 
 4. If the build complains about minSdk, open `android/app/build.gradle`
    (or `build.gradle.kts`) and set `minSdk` to 21.
@@ -33,6 +34,9 @@
 - Tap the screen: controls appear for 5 seconds (theme switch, settings, previous, play/pause, next). A small label shows "live audio" or "simulated" so you can tell which visualizer is running.
 - Themes (the first button cycles them): Focused, Side by Side, VHS.
 - Settings (gear button): visualizer on/off, sensitivity, ring or bars, bar count, accent colors, VHS strength, background drift and beat pulse, particles, performance mode, night mode, burn-in protection.
+- Seek: drag the progress bar in the controls. Tap the album cover to open the player app.
+- Online features (settings, need internet): missing album art lookup (iTunes Search) and synced lyrics (LRCLIB). Both fail quietly when offline.
+- Launch options (settings): open at boot, open when music starts. Newer Android may also need "Display over other apps" allowed; some head units have their own auto-start manager that must allow the app.
 - Swipe left/right: next / previous track.
 - The theme you pick is remembered.
 

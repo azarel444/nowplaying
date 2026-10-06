@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'lyrics.dart';
+import 'net.dart';
 import 'palette.dart';
 
 /// Talks to the Kotlin side (MainActivity) which listens to the active
@@ -15,6 +17,9 @@ class NowPlayingModel extends ChangeNotifier {
 
   bool accessGranted = true; // assume yes until Android says otherwise
   bool visualizerEnabled = true;
+  bool artLookupEnabled = true;
+  bool lyricsEnabled = false;
+  List<LyricLine>? lyrics;
   bool active = false;
   bool playing = false;
   String title = '';
@@ -28,6 +33,12 @@ class NowPlayingModel extends ChangeNotifier {
   DateTime _stamp = DateTime.now();
   String _trackKey = '';
   int _artToken = 0;
+  int _lyricsToken = 0;
+  Timer? _netTimer;
+  bool? _sentBoot;
+  bool? _sentMusic;
+  final Map<String, Uint8List> _artCache = {};
+  final Map<String, List<LyricLine>?> _lyricsCache = {};
   StreamSubscription? _sub;
   StreamSubscription? _fftSub;
 
@@ -62,6 +73,7 @@ class NowPlayingModel extends ChangeNotifier {
   void dispose() {
     _sub?.cancel();
     _fftSub?.cancel();
+    _netTimer?.cancel();
     super.dispose();
   }
 
@@ -90,6 +102,8 @@ class NowPlayingModel extends ChangeNotifier {
         _trackKey = '';
         _artToken++;
         art = null;
+        lyrics = null;
+        _lyricsToken++;
       }
       notifyListeners();
       return;
@@ -105,6 +119,7 @@ class NowPlayingModel extends ChangeNotifier {
     _stamp = DateTime.now();
 
     final key = '$title|$artist|$album|$durationMs';
+    final changed = key != _trackKey;
     final artBytes = m['art'];
     if (artBytes is Uint8List) {
       if (art == null || !listEquals(art!.bytes, artBytes)) {
@@ -115,7 +130,80 @@ class NowPlayingModel extends ChangeNotifier {
       art = null;
     }
     _trackKey = key;
+    if (changed) {
+      lyrics = null;
+      _lyricsToken++;
+      // Wait a moment: players often update the metadata twice in a row.
+      _netTimer?.cancel();
+      _netTimer = Timer(const Duration(milliseconds: 700), _runNetwork);
+    }
     notifyListeners();
+  }
+
+  void _runNetwork() {
+    if (title.isEmpty) return;
+    if (artLookupEnabled && art == null) _lookupArt();
+    if (lyricsEnabled) _fetchLyrics();
+  }
+
+  Future<void> _lookupArt() async {
+    final token = _artToken;
+    final k = '${artist.toLowerCase()}|${title.toLowerCase()}';
+    var bytes = _artCache[k];
+    bytes ??= await fetchArtwork(title, artist);
+    if (bytes == null || token != _artToken) return;
+    _artCache[k] = bytes;
+    if (_artCache.length > 12) _artCache.remove(_artCache.keys.first);
+    await _setArt(bytes);
+  }
+
+  Future<void> _fetchLyrics() async {
+    final token = ++_lyricsToken;
+    final k = '${artist.toLowerCase()}|${title.toLowerCase()}';
+    List<LyricLine>? found;
+    if (_lyricsCache.containsKey(k)) {
+      found = _lyricsCache[k];
+    } else {
+      found = await fetchSyncedLyrics(title, artist, durationMs);
+      _lyricsCache[k] = found;
+      if (_lyricsCache.length > 12) _lyricsCache.remove(_lyricsCache.keys.first);
+    }
+    if (token != _lyricsToken) return;
+    lyrics = found;
+    notifyListeners();
+  }
+
+  /// Index of the lyric line being sung at [ms], or -1 before the first.
+  int lyricIndexAt(int ms) {
+    final l = lyrics;
+    if (l == null || l.isEmpty) return -1;
+    var lo = 0, hi = l.length - 1, ans = -1;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      if (l[mid].ms <= ms) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return ans;
+  }
+
+  void setLyricsEnabled(bool on) {
+    lyricsEnabled = on;
+    if (on) {
+      if (title.isNotEmpty) _fetchLyrics();
+    } else {
+      lyrics = null;
+      _lyricsToken++;
+      notifyListeners();
+    }
+  }
+
+  void setArtLookup(bool on) {
+    artLookupEnabled = on;
+    if (on && title.isNotEmpty && art == null) _lookupArt();
   }
 
   Future<void> _setArt(Uint8List bytes) async {
@@ -139,12 +227,25 @@ class NowPlayingModel extends ChangeNotifier {
     _call(on ? 'startVisualizer' : 'stopVisualizer');
   }
 
+  Future<void> seekTo(int ms) => _call('seekTo', ms);
+  Future<void> openPlayer() => _call('openPlayer');
+  Future<void> openOverlaySettings() => _call('openOverlaySettings');
+
+  /// Tells the Kotlin side whether to launch the app at boot / when music starts.
+  void setLaunchOptions(bool boot, bool music) {
+    if (_sentBoot == boot && _sentMusic == music) return;
+    _sentBoot = boot;
+    _sentMusic = music;
+    _control.invokeMethod('setLaunchOptions', {'boot': boot, 'music': music})
+        .catchError((_) {});
+  }
+
   Future<void> startVisualizer() => _call('startVisualizer');
   Future<void> openAccessSettings() => _call('openAccessSettings');
 
-  Future<void> _call(String method) async {
+  Future<void> _call(String method, [dynamic args]) async {
     try {
-      await _control.invokeMethod(method);
+      await _control.invokeMethod(method, args);
     } catch (_) {}
   }
 }

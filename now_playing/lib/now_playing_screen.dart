@@ -45,6 +45,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   ui.Image? _noise;
   bool _night = false;
   Offset _shift = Offset.zero;
+  double? _drag; // seek bar position while the finger is on it
 
   bool _showControls = false;
   Timer? _hideTimer;
@@ -104,6 +105,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     if (model.visualizerEnabled != settings.visualizer) {
       model.setVisualizer(settings.visualizer);
     }
+    model.setArtLookup(settings.artLookup);
+    if (model.lyricsEnabled != settings.lyrics) {
+      model.setLyricsEnabled(settings.lyrics);
+    }
+    model.setLaunchOptions(settings.bootStart, settings.musicStart);
     _updateClock();
     setState(() {});
   }
@@ -513,7 +519,10 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
             children: [
               _title(h * 0.062, Alignment.center, false),
               SizedBox(height: h * 0.012),
-              _artist(h * 0.026, Alignment.center, false),
+              if (_hasLyrics)
+                _lyricLine(h * 0.03, Alignment.center)
+              else
+                _artist(h * 0.026, Alignment.center, false),
             ],
           ),
         ),
@@ -544,8 +553,15 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 SizedBox(height: h * 0.012),
                 _fit(_albumText(h * 0.028), Alignment.centerLeft),
               ],
-              SizedBox(height: h * 0.07),
-              _bars(h * 0.3, blocky: vhs),
+              if (_hasLyrics) ...[
+                SizedBox(height: h * 0.03),
+                _lyricBlock(h, Alignment.centerLeft, vhs: vhs),
+                SizedBox(height: h * 0.02),
+                _bars(h * 0.2, blocky: vhs),
+              ] else ...[
+                SizedBox(height: h * 0.07),
+                _bars(h * 0.3, blocky: vhs),
+              ],
             ],
           ),
         ),
@@ -566,9 +582,102 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
           _title(h * 0.04, Alignment.center, true),
           SizedBox(height: h * 0.01),
           _artist(h * 0.018, Alignment.center, true),
+          if (_hasLyrics) ...[
+            SizedBox(height: h * 0.02),
+            _lyricBlock(h * 0.6, Alignment.center, vhs: true),
+          ],
           SizedBox(height: h * 0.04),
           _bars(h * 0.14, blocky: true),
         ],
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------------ lyrics
+
+  bool get _hasLyrics =>
+      settings.lyrics && (model.lyrics?.isNotEmpty ?? false);
+
+  String _lyricAt(int delta) {
+    final l = model.lyrics;
+    if (l == null || l.isEmpty) return '';
+    final k = model.lyricIndexAt(model.positionMs + 150) + delta;
+    if (k < 0 || k >= l.length) return '';
+    return l[k].text.isEmpty ? '...' : l[k].text;
+  }
+
+  /// Current line only (used by the Focused theme).
+  Widget _lyricLine(double size, Alignment a) {
+    return AnimatedBuilder(
+      animation: _slow,
+      builder: (context, _) => _fit(
+        Text(
+          _lyricAt(0),
+          maxLines: 1,
+          style: TextStyle(
+            fontSize: size,
+            fontWeight: FontWeight.w400,
+            color: Colors.white.withOpacity(0.85),
+          ),
+        ),
+        a,
+      ),
+    );
+  }
+
+  /// Current line large, next line small. Fixed height so nothing jumps.
+  Widget _lyricBlock(double h, Alignment a, {required bool vhs}) {
+    final cross =
+        a == Alignment.center ? CrossAxisAlignment.center : CrossAxisAlignment.start;
+    return SizedBox(
+      height: h * 0.12,
+      child: AnimatedBuilder(
+        animation: _slow,
+        builder: (context, _) {
+          final i = model.lyricIndexAt(model.positionMs + 150);
+          return AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            child: Column(
+              key: ValueKey<int>(i),
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: cross,
+              children: [
+                _fit(
+                  Text(
+                    _lyricAt(0),
+                    maxLines: 1,
+                    style: TextStyle(
+                      fontSize: h * 0.04,
+                      fontWeight: FontWeight.w400,
+                      color: Colors.white,
+                      shadows: vhs
+                          ? const [
+                              Shadow(
+                                  color: Color(0x99FF2E93), offset: Offset(-1.5, 0)),
+                              Shadow(
+                                  color: Color(0x9905D9FF), offset: Offset(1.5, 0)),
+                            ]
+                          : null,
+                    ),
+                  ),
+                  a,
+                ),
+                SizedBox(height: h * 0.008),
+                _fit(
+                  Text(
+                    _lyricAt(1),
+                    maxLines: 1,
+                    style: TextStyle(
+                      fontSize: h * 0.026,
+                      color: Colors.white38,
+                    ),
+                  ),
+                  a,
+                ),
+              ],
+            ),
+          );
+        },
       ),
     );
   }
@@ -763,8 +872,12 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     );
   }
 
-  Widget _front(double s, bool vhs) =>
-      _pulse(vhs ? _splitArt(s) : _artCard(s));
+  /// Tapping the cover opens the player app that is playing.
+  Widget _front(double s, bool vhs) => GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: model.openPlayer,
+        child: _pulse(vhs ? _splitArt(s) : _artCard(s)),
+      );
 
   /// Mirrored, fading copy of the art plus a thin contact shadow, so the
   /// card looks like it is standing on a glass surface.
@@ -906,7 +1019,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
               borderRadius: BorderRadius.circular(60),
               border: Border.all(color: Colors.white12),
             ),
-            child: Row(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _seekBar(),
+                Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 btn(Icons.view_carousel_outlined, 36, _toggleTheme),
@@ -950,9 +1067,53 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 const SizedBox(width: 8),
               ],
             ),
+              ],
+            ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _seekBar() {
+    return AnimatedBuilder(
+      animation: _tick,
+      builder: (context, _) {
+        final d = model.durationMs;
+        final frac = d > 0 ? (model.positionMs / d).clamp(0.0, 1.0).toDouble() : 0.0;
+        return SizedBox(
+          width: 560,
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 6,
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 12),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 26),
+            ),
+            child: Slider(
+              value: _drag ?? frac,
+              activeColor: _palette.a,
+              inactiveColor: Colors.white24,
+              onChanged: d > 0
+                  ? (v) {
+                      setState(() => _drag = v);
+                      _poke();
+                    }
+                  : null,
+              onChangeEnd: d > 0
+                  ? (v) {
+                      model.seekTo((v * d).round());
+                      _poke();
+                      // Keep the thumb where it was dropped until the
+                      // player reports the new position.
+                      Timer(const Duration(milliseconds: 700), () {
+                        if (mounted) setState(() => _drag = null);
+                      });
+                    }
+                  : null,
+            ),
+          ),
+        );
+      },
     );
   }
 
