@@ -32,7 +32,8 @@
 
 ## Using it
 - Tap the screen: controls appear for 5 seconds (theme switch, settings, previous, play/pause, next). A small label shows "live audio" or "simulated" so you can tell which visualizer is running.
-- Themes (the first button cycles them): Focused, Side by Side, VHS.
+- Themes (the first button cycles them): Focused, Side by Side, VHS, Edge to Edge.
+- Optional effects (settings, all off by default): breathing glow, aurora sweep, light rays, beat ripples, water shimmer, cover bloom. Performance mode turns them all off.
 - Settings (gear button): visualizer on/off, sensitivity, ring or bars, bar count, accent colors, VHS strength, background drift and beat pulse, particles, performance mode, night mode, burn-in protection.
 - Seek: drag the progress bar in the controls. Tap the album cover to open the player app.
 - Online features (settings, need internet): missing album art lookup (iTunes Search) and synced lyrics (LRCLIB). Both fail quietly when offline.

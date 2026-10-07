@@ -47,6 +47,12 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   Offset _shift = Offset.zero;
   double? _drag; // seek bar position while the finger is on it
 
+  final fxClock = FxClock();
+  final ripples = RippleState();
+  final _artKey = GlobalKey(); // lets rings and rays find the cover
+  ArtPalette? _lastArtPalette;
+  double _artNullSince = -1;
+
   bool _showControls = false;
   Timer? _hideTimer;
   Timer? _clockTimer;
@@ -54,8 +60,23 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   ArtPalette get _palette {
     final custom = settings.accentPalette;
     if (custom != null) return custom;
-    if (settings.theme == 2) return AppSettings.vaporwave;
-    return model.art?.palette ?? ArtPalette.fallback;
+    if (settings.theme == 2 && settings.vhsVaporwave) {
+      return AppSettings.vaporwave;
+    }
+    final fromArt = model.art?.palette;
+    if (fromArt != null) {
+      _lastArtPalette = fromArt;
+      _artNullSince = -1;
+      return fromArt;
+    }
+    if (!model.active) return ArtPalette.fallback;
+    // Between tracks the art is briefly missing. Keep the last colors for a
+    // few seconds instead of flashing a different palette, then go neutral.
+    if (_artNullSince < 0) _artNullSince = _time;
+    if (_lastArtPalette != null && _time - _artNullSince < 4) {
+      return _lastArtPalette!;
+    }
+    return ArtPalette.neutral;
   }
 
   @override
@@ -183,6 +204,9 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     particles.t += dt * (0.25 + 1.2 * bass);
     grid.scroll += dt * (0.12 + 0.9 * bass);
     _stepGlitch();
+    fxClock.t = _time;
+    fxClock.bass = bass;
+    ripples.update(_time, bass, settings.fxRipples && model.playing);
 
     _slowAcc += dt;
     if (_slowAcc >= 0.1) {
@@ -201,7 +225,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   }
 
   void _toggleTheme() {
-    settings.update(() => settings.theme = (settings.theme + 1) % 3);
+    settings.update(() => settings.theme = (settings.theme + 1) % 4);
     _poke();
   }
 
@@ -243,6 +267,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
           fit: StackFit.expand,
           children: [
             _background(),
+            if (heavy) ..._extraFx(settings.effects),
             if (vhs) ..._vhsBackdrop(fx),
             if (settings.bgEffects && settings.particles && heavy)
               IgnorePointer(
@@ -262,7 +287,9 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 // then song info and lyrics) when the screen gets narrow.
                 final narrow = w < h * 1.3;
                 final Widget layout;
-                if (vhs) {
+                if (settings.theme == 3) {
+                  layout = narrow ? _edgeNarrow(w, h) : _edgeLayout(w, h);
+                } else if (vhs) {
                   layout = narrow
                       ? _stackedLayout(w, h, vhs: true)
                       : _sideLayout(w, h, vhs: true);
@@ -274,7 +301,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                   layout = _focused(w, h);
                 }
                 return Transform.translate(
-                  offset: _shift,
+                  offset: settings.theme == 3 ? Offset.zero : _shift,
                   child: Stack(
                     fit: StackFit.expand,
                     children: [layout, if (vhs) _osd(h)],
@@ -377,6 +404,33 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
 
   // -------------------------------------------------------------- VHS layers
 
+  /// The optional effects, each switched on or off in settings.
+  List<Widget> _extraFx(double k) {
+    final p = _palette;
+    Widget layer(CustomPainter painter) => IgnorePointer(
+          child: RepaintBoundary(child: CustomPaint(painter: painter)),
+        );
+    return [
+      if (settings.fxGlow)
+        layer(GlowPainter(clock: fxClock, palette: p, k: k, repaint: _tick)),
+      if (settings.fxSweep)
+        layer(SweepPainter(clock: fxClock, palette: p, k: k, repaint: _tick)),
+      if (settings.fxRays)
+        layer(RaysPainter(
+            clock: fxClock, artKey: _artKey, palette: p, k: k, repaint: _tick)),
+      if (settings.fxRipples)
+        layer(RipplesPainter(
+            state: ripples,
+            clock: fxClock,
+            artKey: _artKey,
+            palette: p,
+            k: k,
+            repaint: _tick)),
+      if (settings.fxWater)
+        layer(WaterPainter(clock: fxClock, palette: p, k: k, repaint: _tick)),
+    ];
+  }
+
   List<Widget> _vhsBackdrop(double fx) => [
         DecoratedBox(
           decoration: BoxDecoration(
@@ -428,18 +482,18 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
         ),
       ];
 
-  /// Old-VCR on-screen display: PLAY / PAUSE and a tape counter.
+  /// Old-VCR on-screen display (top right): PLAY / PAUSE and a tape counter.
   Widget _osd(double h) {
     final size = (h * 0.05).clamp(18.0, 40.0).toDouble();
     return Positioned(
-      left: size,
+      right: size,
       top: size * 0.8,
       child: AnimatedBuilder(
         animation: _slow,
         builder: (context, _) {
           final blinkOff = !model.playing && (_slow.value ~/ 5) % 2 == 1;
           return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.end,
             mainAxisSize: MainAxisSize.min,
             children: [
               Opacity(
@@ -586,39 +640,64 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     );
   }
 
-  /// Art on the left, text and bars on the right. Used by Side by Side and
-  /// VHS. The art card itself is centered on the screen; its reflection is
-  /// allowed to run down toward the bottom edge.
+  /// Art on the left, text and bars on the right (Side by Side and VHS).
+  /// The art card is centered on the screen. The bottom of the bars lines up
+  /// with the bottom of the art, and the bar reflection lines up with the
+  /// art reflection. Song info and lyrics sit above the bars.
   Widget _sideLayout(double w, double h, {required bool vhs}) {
-    final artSize = math.min(h * 0.6, w * 0.34);
+    final s = math.min(h * 0.6, w * 0.34);
+    final u = s / 0.6; // text scale: equals h unless the screen is narrow
+    final artTop = (h - s) / 2;
+    final artBottom = artTop + s;
+    final barsMax = s * 0.40; // tallest bar
+    final reflH = s * 0.28; // same height as the art's reflection
+    final barsBox = barsMax + reflH;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         SizedBox(width: w * 0.07),
-        _artCentered(artSize, vhs: vhs),
+        _artCentered(s, vhs: vhs),
         SizedBox(width: w * 0.05),
         Expanded(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _artist(h * 0.032, Alignment.centerLeft, vhs),
-              SizedBox(height: h * 0.012),
-              _title(h * 0.085, Alignment.centerLeft, vhs),
-              if (model.album.isNotEmpty && model.album != model.title) ...[
-                SizedBox(height: h * 0.012),
-                _fit(_albumText(h * 0.028), Alignment.centerLeft),
+          child: SizedBox(
+            height: h,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  top: artTop,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _artist(u * 0.032, Alignment.centerLeft, vhs),
+                      SizedBox(height: u * 0.012),
+                      _title(u * 0.085, Alignment.centerLeft, vhs),
+                      if (model.album.isNotEmpty &&
+                          model.album != model.title) ...[
+                        SizedBox(height: u * 0.012),
+                        _fit(_albumText(u * 0.028), Alignment.centerLeft),
+                      ],
+                      if (_hasLyrics) ...[
+                        SizedBox(height: u * 0.03),
+                        _lyricBlock(u, Alignment.centerLeft, vhs: vhs),
+                      ],
+                    ],
+                  ),
+                ),
+                if (settings.visualizer)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: artBottom - barsMax,
+                    height: barsBox,
+                    child: _bars(barsBox,
+                        blocky: vhs, baseFrac: barsMax / barsBox),
+                  ),
               ],
-              if (_hasLyrics) ...[
-                SizedBox(height: h * 0.03),
-                _lyricBlock(h, Alignment.centerLeft, vhs: vhs),
-                SizedBox(height: h * 0.02),
-                _bars(h * 0.2, blocky: vhs),
-              ] else ...[
-                SizedBox(height: h * 0.07),
-                _bars(h * 0.3, blocky: vhs),
-              ],
-            ],
+            ),
           ),
         ),
         SizedBox(width: w * 0.05),
@@ -626,25 +705,58 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     );
   }
 
-  /// Narrow screens: album art on top, the visualizer under it, then song
-  /// info and lyrics. The whole group is centered, and scales down if it
-  /// would not fit.
+  /// A thin fading line used between the sections of the stacked layout.
+  Widget _divider(double width, {required bool vhs}) {
+    final c = vhs ? const Color(0xFFFF2E93) : _palette.a;
+    return SizedBox(
+      width: width,
+      height: vhs ? 2.0 : 1.2,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: vhs
+                ? [
+                    Colors.transparent,
+                    c.withOpacity(0.7),
+                    const Color(0xB305D9FF),
+                    Colors.transparent,
+                  ]
+                : [Colors.transparent, c.withOpacity(0.5), Colors.transparent],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Narrow screens: album art on top, then the visualizer, a divider,
+  /// the lyrics, another divider, and the song info. The whole group is
+  /// centered, and scales down if it would not fit.
   Widget _stackedLayout(double w, double h, {required bool vhs}) {
-    final s = math.min(w * 0.6, h * 0.40);
+    final s = math.min(w * 0.6, h * 0.36);
+    final cw = w * 0.84;
+    final gap = h * 0.018;
     final showAlbum =
         !vhs && model.album.isNotEmpty && model.album != model.title;
     return Center(
       child: FittedBox(
         fit: BoxFit.scaleDown,
         child: SizedBox(
-          width: w * 0.84,
+          width: cw,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               _artWithReflection(s, vhs: vhs),
-              SizedBox(height: h * 0.03),
-              _bars(h * 0.11, blocky: vhs),
-              SizedBox(height: h * 0.03),
+              SizedBox(height: gap * 1.5),
+              _bars(h * 0.09, blocky: vhs),
+              SizedBox(height: gap),
+              _divider(cw, vhs: vhs),
+              SizedBox(height: gap),
+              if (_hasLyrics) ...[
+                _lyricBlock(h * 0.75, Alignment.center, vhs: vhs),
+                SizedBox(height: gap),
+                _divider(cw, vhs: vhs),
+                SizedBox(height: gap),
+              ],
               _title(h * 0.05, Alignment.center, vhs),
               SizedBox(height: h * 0.01),
               _artist(h * 0.022, Alignment.center, vhs),
@@ -652,14 +764,129 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 SizedBox(height: h * 0.008),
                 _fit(_albumText(h * 0.02), Alignment.center),
               ],
-              if (_hasLyrics) ...[
-                SizedBox(height: h * 0.02),
-                _lyricBlock(h * 0.75, Alignment.center, vhs: vhs),
-              ],
             ],
           ),
         ),
       ),
+    );
+  }
+
+  // ---------------------------------------------------------- edge to edge
+
+  /// The cover fills the whole area given, cropped to fit, no frame.
+  Widget _edgeArt(double w, double h) {
+    final art = model.art;
+    return GestureDetector(
+      key: _artKey,
+      behavior: HitTestBehavior.opaque,
+      onTap: _openPlayer,
+      child: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 500),
+        child: SizedBox(
+          key: ValueKey<Object>(art ?? 'placeholder'),
+          width: w,
+          height: h,
+          child: art == null
+              ? Container(
+                  color: const Color(0xFF111827),
+                  child: Center(
+                    child: Icon(Icons.music_note,
+                        size: h * 0.2, color: Colors.white24),
+                  ),
+                )
+              : Image.memory(
+                  art.bytes,
+                  width: w,
+                  height: h,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                  filterQuality: FilterQuality.high,
+                ),
+        ),
+      ),
+    );
+  }
+
+  /// Cover on the left half of the screen, edge to edge. A vertical
+  /// visualizer runs along the cover's edge, and the song info and lyrics
+  /// are right-aligned in the space to the right of it.
+  Widget _edgeLayout(double w, double h) {
+    return Row(
+      children: [
+        SizedBox(width: w * 0.5, height: h, child: _edgeArt(w * 0.5, h)),
+        if (settings.visualizer)
+          SizedBox(
+            width: w * 0.09,
+            height: h,
+            child: RepaintBoundary(
+              child: CustomPaint(
+                painter: VerticalBarsPainter(
+                  sim: sim,
+                  palette: _palette,
+                  count: settings.barCount,
+                  gain: settings.sensitivity,
+                  repaint: _tick,
+                ),
+              ),
+            ),
+          ),
+        Expanded(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(w * 0.02, h * 0.06, w * 0.04, h * 0.06),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                _artist(h * 0.03, Alignment.centerRight, false),
+                SizedBox(height: h * 0.012),
+                _title(h * 0.08, Alignment.centerRight, false),
+                if (model.album.isNotEmpty && model.album != model.title) ...[
+                  SizedBox(height: h * 0.012),
+                  _fit(_albumText(h * 0.026), Alignment.centerRight),
+                ],
+                if (_hasLyrics) ...[
+                  SizedBox(height: h * 0.04),
+                  _lyricBlock(h, Alignment.centerRight, vhs: false),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Narrow screens: the cover takes the top half edge to edge, with the
+  /// visualizer, song info and lyrics centered below it.
+  Widget _edgeNarrow(double w, double h) {
+    return Column(
+      children: [
+        SizedBox(width: w, height: h * 0.5, child: _edgeArt(w, h * 0.5)),
+        Expanded(
+          child: Center(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: SizedBox(
+                width: w * 0.84,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _bars(h * 0.09),
+                    SizedBox(height: h * 0.02),
+                    _title(h * 0.05, Alignment.center, false),
+                    SizedBox(height: h * 0.01),
+                    _artist(h * 0.022, Alignment.center, false),
+                    if (_hasLyrics) ...[
+                      SizedBox(height: h * 0.02),
+                      _lyricBlock(h * 0.75, Alignment.center, vhs: false),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -697,8 +924,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
 
   /// Current line large, next line small. Fixed height so nothing jumps.
   Widget _lyricBlock(double h, Alignment a, {required bool vhs}) {
-    final cross =
-        a == Alignment.center ? CrossAxisAlignment.center : CrossAxisAlignment.start;
+    final cross = a == Alignment.center
+        ? CrossAxisAlignment.center
+        : (a == Alignment.centerRight
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start);
     return SizedBox(
       height: h * 0.12,
       child: AnimatedBuilder(
@@ -752,7 +982,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     );
   }
 
-  Widget _bars(double height, {bool blocky = false}) {
+  Widget _bars(double height, {bool blocky = false, double baseFrac = 0.72}) {
     if (!settings.visualizer) return SizedBox(height: height);
     return SizedBox(
       height: height,
@@ -765,6 +995,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
             count: settings.barCount,
             gain: settings.sensitivity,
             blocky: blocky,
+            baseFrac: baseFrac,
             repaint: _tick,
           ),
         ),
@@ -944,9 +1175,29 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
 
   /// Tapping the cover opens the player app that is playing.
   Widget _front(double s, bool vhs) => GestureDetector(
+        key: _artKey,
         behavior: HitTestBehavior.opaque,
         onTap: _openPlayer,
-        child: _pulse(vhs ? _splitArt(s) : _artCard(s)),
+        child: _pulse(
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              if (settings.fxBloom && !settings.performance) _bloom(s),
+              vhs ? _splitArt(s) : _artCard(s),
+            ],
+          ),
+        ),
+      );
+
+  /// Soft glow: a blurred, slightly larger copy of the cover behind it.
+  Widget _bloom(double s) => RepaintBoundary(
+        child: Transform.scale(
+          scale: 1.06,
+          child: ImageFiltered(
+            imageFilter: ui.ImageFilter.blur(sigmaX: s * 0.04, sigmaY: s * 0.04),
+            child: Opacity(opacity: 0.55, child: _artContent(s)),
+          ),
+        ),
       );
 
   /// Mirrored, fading copy of the art plus a thin contact shadow, so the

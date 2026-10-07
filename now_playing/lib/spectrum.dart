@@ -182,19 +182,24 @@ class BarsPainter extends CustomPainter {
   /// Wide square-ended bars (used by the VHS theme).
   final bool blocky;
 
+  /// Where the baseline sits, as a fraction of the height (the rest is the
+  /// reflection area).
+  final double baseFrac;
+
   BarsPainter({
     required this.sim,
     required this.palette,
     required this.count,
     required this.gain,
     this.blocky = false,
+    this.baseFrac = 0.72,
     required Listenable repaint,
   }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
     final n = count;
-    final barsH = size.height * 0.72;
+    final barsH = size.height * baseFrac;
     final baseY = barsH;
     final step = size.width / n;
     final bw = step * (blocky ? 0.68 : 0.42);
@@ -219,7 +224,7 @@ class BarsPainter extends CustomPainter {
 
       final rh = math.min(h * 0.4, size.height - baseY - 2);
       if (rh > 0) {
-        canvas.drawLine(Offset(x, baseY + 4), Offset(x, baseY + 4 + rh), refl);
+        canvas.drawLine(Offset(x, baseY + 3), Offset(x, baseY + 3 + rh), refl);
       }
     }
   }
@@ -229,5 +234,47 @@ class BarsPainter extends CustomPainter {
       old.palette != palette ||
       old.count != count ||
       old.gain != gain ||
-      old.blocky != blocky;
+      old.blocky != blocky ||
+      old.baseFrac != baseFrac;
+}
+
+/// Vertical spectrum for the Edge to Edge theme: bars are stacked top to
+/// bottom along the edge of the art and grow to the right. Bass is at the
+/// bottom, treble at the top.
+class VerticalBarsPainter extends CustomPainter {
+  final SpectrumSim sim;
+  final ArtPalette palette;
+  final int count;
+  final double gain;
+
+  VerticalBarsPainter({
+    required this.sim,
+    required this.palette,
+    required this.count,
+    required this.gain,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final n = count;
+    final step = size.height / n;
+    final th = step * 0.55;
+    final maxLen = size.width * 0.92;
+    final p = Paint()
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = th;
+    for (int i = 0; i < n; i++) {
+      final f = n > 1 ? i / (n - 1) : 0.0; // 0 = bottom
+      final idx = (f * (SpectrumSim.bars - 1)).round();
+      final len = math.max(th, sim.level(idx, gain) * maxLen);
+      final y = size.height - step * (i + 0.5);
+      p.color = palette.at(f);
+      canvas.drawLine(Offset(th / 2, y), Offset(th / 2 + len, y), p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(VerticalBarsPainter old) =>
+      old.palette != palette || old.count != count || old.gain != gain;
 }

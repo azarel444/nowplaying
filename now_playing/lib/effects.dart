@@ -278,3 +278,249 @@ class GridPainter extends CustomPainter {
   @override
   bool shouldRepaint(GridPainter old) => old.k != k;
 }
+
+// ------------------------------------------------------- extra effects
+
+/// Shared clock for the extra effects. The screen updates it every frame.
+class FxClock {
+  double t = 0; // seconds
+  double bass = 0; // 0..1
+}
+
+/// Finds the album art on screen so rings and rays can start from it.
+RenderBox? _artBox(GlobalKey key) {
+  final ro = key.currentContext?.findRenderObject();
+  if (ro is RenderBox && ro.attached && ro.hasSize) return ro;
+  return null;
+}
+
+Offset _artCenter(GlobalKey key, Size size) {
+  final box = _artBox(key);
+  if (box == null) return Offset(size.width * 0.25, size.height / 2);
+  return box.localToGlobal(box.size.center(Offset.zero));
+}
+
+/// Breathing glow: three soft blobs in the art colors drift around and
+/// swell slowly, a little brighter on bass.
+class GlowPainter extends CustomPainter {
+  final FxClock clock;
+  final ArtPalette palette;
+  final double k;
+
+  GlowPainter({
+    required this.clock,
+    required this.palette,
+    required this.k,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final t = clock.t;
+    final cols = palette.colors;
+    final big = math.max(size.width, size.height);
+    for (int i = 0; i < 3; i++) {
+      final c = Offset(
+        size.width * (0.5 + 0.38 * math.sin(t * 0.11 + i * 2.1)),
+        size.height * (0.5 + 0.34 * math.cos(t * 0.09 + i * 1.7)),
+      );
+      final r = big * (0.38 + 0.08 * math.sin(t * 0.35 + i));
+      final a = _a((0.16 + 0.10 * math.sin(t * 0.5 + i * 1.3) + 0.12 * clock.bass) * k);
+      final p = Paint()
+        ..shader = ui.Gradient.radial(
+          c,
+          r,
+          [cols[i].withOpacity(a), cols[i].withOpacity(0)],
+        );
+      canvas.drawCircle(c, r, p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(GlowPainter old) => old.palette != palette || old.k != k;
+}
+
+/// Aurora sweep: slow soft bands of the art colors roll across the screen.
+class SweepPainter extends CustomPainter {
+  final FxClock clock;
+  final ArtPalette palette;
+  final double k;
+
+  SweepPainter({
+    required this.clock,
+    required this.palette,
+    required this.k,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final v = Offset(size.width * 0.9, size.height * 0.6);
+    final p = (clock.t * 0.03) % 1.0;
+    // Moving the start by exactly one period along v loops without a jump.
+    final begin = Offset(v.dx * p, v.dy * p);
+    final end = begin + v;
+    final a = _a((0.20 + 0.15 * clock.bass) * k);
+    final c = palette.colors;
+    final shader = ui.Gradient.linear(
+      begin,
+      end,
+      [
+        c[0].withOpacity(0),
+        c[0].withOpacity(a),
+        c[1].withOpacity(a),
+        c[2].withOpacity(a),
+        c[2].withOpacity(0),
+      ],
+      const [0.0, 0.25, 0.5, 0.75, 1.0],
+      TileMode.repeated,
+    );
+    canvas.drawRect(Offset.zero & size, Paint()..shader = shader);
+  }
+
+  @override
+  bool shouldRepaint(SweepPainter old) => old.palette != palette || old.k != k;
+}
+
+/// Light rays fanning out from behind the art, brighter on bass.
+class RaysPainter extends CustomPainter {
+  final FxClock clock;
+  final GlobalKey artKey;
+  final ArtPalette palette;
+  final double k;
+
+  RaysPainter({
+    required this.clock,
+    required this.artKey,
+    required this.palette,
+    required this.k,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final c = _artCenter(artKey, size);
+    final reach = math.sqrt(size.width * size.width + size.height * size.height);
+    final intensity = _a((0.12 + 0.35 * clock.bass) * k);
+    final cols = palette.colors;
+    final paints = List<Paint>.generate(
+      3,
+      (i) => Paint()
+        ..shader = ui.Gradient.radial(
+          c,
+          reach * 0.7,
+          [cols[i].withOpacity(intensity), cols[i].withOpacity(0)],
+        ),
+    );
+    final rot = clock.t * 0.05;
+    const n = 9;
+    for (int i = 0; i < n; i++) {
+      final ang = rot + i * 2 * math.pi / n;
+      final half = 0.075 + 0.03 * math.sin(clock.t * 0.4 + i);
+      final path = Path()
+        ..moveTo(c.dx, c.dy)
+        ..lineTo(c.dx + reach * math.cos(ang - half),
+            c.dy + reach * math.sin(ang - half))
+        ..lineTo(c.dx + reach * math.cos(ang + half),
+            c.dy + reach * math.sin(ang + half))
+        ..close();
+      canvas.drawPath(path, paints[i % 3]);
+    }
+  }
+
+  @override
+  bool shouldRepaint(RaysPainter old) => old.palette != palette || old.k != k;
+}
+
+/// Starts of the ripple rings. A ring is born on each detected beat.
+class RippleState {
+  final List<double> starts = [];
+  double _lastBeat = -10;
+  double _avg = 0.2;
+
+  void update(double now, double bass, bool enabled) {
+    starts.removeWhere((s) => now - s > 2.8);
+    _avg = _avg * 0.95 + bass * 0.05;
+    if (!enabled) return;
+    if (bass > 0.25 && bass > _avg * 1.35 + 0.08 && now - _lastBeat > 0.45) {
+      _lastBeat = now;
+      starts.add(now);
+      if (starts.length > 5) starts.removeAt(0);
+    }
+  }
+}
+
+/// Rings that expand outward from the art on each beat, like water.
+class RipplesPainter extends CustomPainter {
+  final RippleState state;
+  final FxClock clock;
+  final GlobalKey artKey;
+  final ArtPalette palette;
+  final double k;
+
+  RipplesPainter({
+    required this.state,
+    required this.clock,
+    required this.artKey,
+    required this.palette,
+    required this.k,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (state.starts.isEmpty) return;
+    final c = _artCenter(artKey, size);
+    final box = _artBox(artKey);
+    final baseR = box != null ? box.size.shortestSide / 2 : size.shortestSide * 0.2;
+    final maxR = math.sqrt(size.width * size.width + size.height * size.height) * 0.55;
+    final p = Paint()..style = PaintingStyle.stroke;
+    for (final s in state.starts) {
+      final f = (clock.t - s) / 2.6;
+      if (f < 0 || f > 1) continue;
+      p.strokeWidth = 1.0 + 3.0 * (1 - f);
+      p.color = palette.at(f).withOpacity(_a((1 - f) * 0.35 * k));
+      canvas.drawCircle(c, baseR + f * maxR, p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(RipplesPainter old) => old.palette != palette || old.k != k;
+}
+
+/// Water shimmer: faint broken lines that drift and twinkle in the lower
+/// part of the screen, like light on a lake.
+class WaterPainter extends CustomPainter {
+  final FxClock clock;
+  final ArtPalette palette;
+  final double k;
+
+  WaterPainter({
+    required this.clock,
+    required this.palette,
+    required this.k,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const lines = 26;
+    final top = size.height * 0.72;
+    final tint = Color.lerp(Colors.white, palette.b, 0.4)!;
+    final p = Paint();
+    for (int i = 0; i < lines; i++) {
+      final f = i / (lines - 1);
+      final y = top + (size.height - top) * math.pow(f, 1.5).toDouble();
+      final ph = i * 1.7;
+      final len = size.width * (0.12 + 0.28 * (((i * 37) % 10) / 10));
+      final x = ((((i * 53) % 100) / 100) + 0.05 * math.sin(clock.t * 0.6 + ph)) *
+          size.width;
+      final tw = 0.5 + 0.5 * math.sin(clock.t * 1.1 + ph * 2);
+      p.color = tint.withOpacity(_a((0.04 + 0.07 * tw) * (0.4 + f) * k));
+      canvas.drawRect(Rect.fromLTWH(x - len / 2, y, len, 1.5 + 2 * f), p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(WaterPainter old) => old.palette != palette || old.k != k;
+}

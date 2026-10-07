@@ -5,7 +5,7 @@ import 'palette.dart';
 
 /// All user-adjustable options, saved on the device.
 class AppSettings extends ChangeNotifier {
-  static const themeNames = ['Focused', 'Side by Side', 'VHS'];
+  static const themeNames = ['Focused', 'Side by Side', 'VHS', 'Edge to Edge'];
   static const accentNames = [
     'Auto (from art)',
     'Vaporwave',
@@ -31,7 +31,7 @@ class AppSettings extends ChangeNotifier {
 
   static const barCounts = [32, 48, 64, 96];
 
-  int theme = 0; // 0 Focused, 1 Side by Side, 2 VHS
+  int theme = 0; // 0 Focused, 1 Side by Side, 2 VHS, 3 Edge to Edge
   bool visualizer = true;
   double sensitivity = 1.0; // 0.5 .. 1.5
   int vizStyle = 0; // Focused theme: 0 ring, 1 bars
@@ -47,13 +47,20 @@ class AppSettings extends ChangeNotifier {
   bool lyrics = false; // synced lyrics from LRCLIB
   bool bootStart = false;
   bool musicStart = false;
+  bool vhsVaporwave = false; // VHS: pink/cyan instead of album colors
+  bool fxGlow = false;
+  bool fxSweep = false;
+  bool fxRays = false;
+  bool fxRipples = false;
+  bool fxWater = false;
+  bool fxBloom = false;
 
   ArtPalette? get accentPalette =>
       (accent > 0 && accent < accents.length) ? accents[accent] : null;
 
   Future<void> load() async {
     final p = await SharedPreferences.getInstance();
-    theme = _int(p, 'theme', 0, 0, 2);
+    theme = _int(p, 'theme', 0, 0, 3);
     visualizer = p.getBool('visualizer') ?? true;
     sensitivity = (p.getDouble('sensitivity') ?? 1.0).clamp(0.5, 1.5).toDouble();
     vizStyle = _int(p, 'vizStyle', 0, 0, 1);
@@ -70,6 +77,13 @@ class AppSettings extends ChangeNotifier {
     lyrics = p.getBool('lyrics') ?? false;
     bootStart = p.getBool('bootStart') ?? false;
     musicStart = p.getBool('musicStart') ?? false;
+    vhsVaporwave = p.getBool('vhsVaporwave') ?? false;
+    fxGlow = p.getBool('fxGlow') ?? false;
+    fxSweep = p.getBool('fxSweep') ?? false;
+    fxRays = p.getBool('fxRays') ?? false;
+    fxRipples = p.getBool('fxRipples') ?? false;
+    fxWater = p.getBool('fxWater') ?? false;
+    fxBloom = p.getBool('fxBloom') ?? false;
     notifyListeners();
   }
 
@@ -96,6 +110,13 @@ class AppSettings extends ChangeNotifier {
     await p.setBool('lyrics', lyrics);
     await p.setBool('bootStart', bootStart);
     await p.setBool('musicStart', musicStart);
+    await p.setBool('vhsVaporwave', vhsVaporwave);
+    await p.setBool('fxGlow', fxGlow);
+    await p.setBool('fxSweep', fxSweep);
+    await p.setBool('fxRays', fxRays);
+    await p.setBool('fxRipples', fxRipples);
+    await p.setBool('fxWater', fxWater);
+    await p.setBool('fxBloom', fxBloom);
   }
 
   /// Apply a change, tell listeners, and (by default) save it.

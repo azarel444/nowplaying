@@ -16,6 +16,14 @@ class ArtPalette {
     Color(0xFFFF9A5A), // orange
   );
 
+  /// Soft white-blue tints, used when the art has no real color (black and
+  /// white covers) so the visualizer still matches instead of inventing hues.
+  static const neutral = ArtPalette(
+    Color(0xFFEAF0FA),
+    Color(0xFFB4BED2),
+    Color(0xFF8590A8),
+  );
+
   List<Color> get colors => [a, b, c];
 
   /// t: 0 (left) .. 1 (right)
@@ -51,38 +59,80 @@ class ArtAssets {
     }
   }
 
+  /// Colors come only from the art itself: pixels are grouped into 12 hue
+  /// bins weighted by how vivid they are, and the biggest bins win. If the
+  /// art only has one real hue, the other two are lighter and deeper shades
+  /// of that same hue (never a made-up different hue).
   static ArtPalette _extract(ByteData d, int w, int h) {
-    final cands = <_Cand>[];
-    for (int i = 0; i < w * h; i++) {
-      final r = d.getUint8(i * 4);
-      final g = d.getUint8(i * 4 + 1);
-      final b = d.getUint8(i * 4 + 2);
-      final hsv = HSVColor.fromColor(Color.fromARGB(255, r, g, b));
-      if (hsv.saturation < 0.25 || hsv.value < 0.25) continue;
-      cands.add(_Cand(hsv, hsv.saturation * hsv.value));
-    }
-    if (cands.isEmpty) return ArtPalette.fallback;
-    cands.sort((x, y) => y.score.compareTo(x.score));
+    const bins = 12;
+    final wt = List<double>.filled(bins, 0.0);
+    final sSum = List<double>.filled(bins, 0.0);
+    final vSum = List<double>.filled(bins, 0.0);
+    final xSum = List<double>.filled(bins, 0.0);
+    final ySum = List<double>.filled(bins, 0.0);
+    var valueSum = 0.0;
+    final n = w * h;
 
-    final first = cands.first.hsv;
+    for (int i = 0; i < n; i++) {
+      final hsv = HSVColor.fromColor(Color.fromARGB(
+          255, d.getUint8(i * 4), d.getUint8(i * 4 + 1), d.getUint8(i * 4 + 2)));
+      valueSum += hsv.value;
+      if (hsv.saturation < 0.18 || hsv.value < 0.18) continue;
+      final score = hsv.saturation * hsv.value;
+      final bi = (hsv.hue ~/ 30) % bins;
+      wt[bi] += score;
+      sSum[bi] += hsv.saturation * score;
+      vSum[bi] += hsv.value * score;
+      final rad = hsv.hue * math.pi / 180;
+      xSum[bi] += math.cos(rad) * score;
+      ySum[bi] += math.sin(rad) * score;
+    }
+
+    var total = 0.0;
+    for (final x in wt) {
+      total += x;
+    }
+    if (n == 0 || total < n * 0.02) {
+      // Black and white or very dark art: stay neutral.
+      final v = n == 0 ? 0.8 : valueSum / n;
+      Color gray(double mul) => HSVColor.fromAHSV(
+              1, 215, 0.08, (mul * (0.7 + 0.3 * v)).clamp(0.0, 1.0).toDouble())
+          .toColor();
+      return ArtPalette(gray(1.0), gray(0.8), gray(0.62));
+    }
+
+    HSVColor rep(int i) {
+      var hue = math.atan2(ySum[i], xSum[i]) * 180 / math.pi;
+      if (hue < 0) hue += 360;
+      return HSVColor.fromAHSV(
+        1,
+        hue.clamp(0.0, 360.0).toDouble(),
+        (sSum[i] / wt[i]).clamp(0.0, 1.0).toDouble(),
+        (vSum[i] / wt[i]).clamp(0.0, 1.0).toDouble(),
+      );
+    }
+
+    final order = List<int>.generate(bins, (i) => i)
+      ..sort((x, y) => wt[y].compareTo(wt[x]));
+    final first = rep(order[0]);
     HSVColor? second;
-    for (final c in cands) {
-      if (_hueDist(c.hsv.hue, first.hue) >= 50) {
-        second = c.hsv;
-        break;
-      }
-    }
-    second ??= first.withHue((first.hue + 70) % 360);
-
     HSVColor? third;
-    for (final c in cands) {
-      if (_hueDist(c.hsv.hue, first.hue) >= 40 &&
-          _hueDist(c.hsv.hue, second.hue) >= 40) {
-        third = c.hsv;
+    for (final i in order.skip(1)) {
+      if (wt[i] < wt[order[0]] * 0.12) break;
+      final c = rep(i);
+      if (second == null) {
+        if (_hueDist(c.hue, first.hue) >= 35) second = c;
+      } else if (_hueDist(c.hue, first.hue) >= 35 &&
+          _hueDist(c.hue, second.hue) >= 35) {
+        third = c;
         break;
       }
     }
-    third ??= second.withHue((second.hue + 50) % 360);
+    // Same hue, different shade: always related to the art.
+    second ??= HSVColor.fromAHSV(1, first.hue, first.saturation * 0.65,
+        math.min(1.0, first.value + 0.15));
+    third ??= HSVColor.fromAHSV(1, second.hue,
+        math.min(1.0, second.saturation * 1.1), second.value * 0.72);
 
     return ArtPalette(_vivid(first), _vivid(second), _vivid(third));
   }
@@ -92,14 +142,9 @@ class ArtAssets {
     return d > 180 ? 360 - d : d;
   }
 
+  /// A gentle lift so colors read well on a dark screen. The hue is kept.
   static Color _vivid(HSVColor c) => c
-      .withSaturation(math.max(c.saturation, 0.6))
-      .withValue(math.max(c.value, 0.85))
+      .withSaturation(math.max(c.saturation, 0.45))
+      .withValue(math.max(c.value, 0.8))
       .toColor();
-}
-
-class _Cand {
-  final HSVColor hsv;
-  final double score;
-  _Cand(this.hsv, this.score);
 }
