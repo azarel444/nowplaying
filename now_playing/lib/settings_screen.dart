@@ -23,10 +23,21 @@ class SettingsScreen extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(24, 12, 12, 0),
               child: Row(
                 children: [
-                  const Expanded(
-                    child: Text('Settings',
-                        style:
-                            TextStyle(fontSize: 28, fontWeight: FontWeight.w300)),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        Image.asset(
+                          'assets/vybe_logo.png',
+                          height: 34,
+                          errorBuilder: (context, error, stack) =>
+                              const SizedBox.shrink(),
+                        ),
+                        const SizedBox(width: 18),
+                        const Text('Settings',
+                            style: TextStyle(
+                                fontSize: 28, fontWeight: FontWeight.w300)),
+                      ],
+                    ),
                   ),
                   IconButton(
                     iconSize: 38,

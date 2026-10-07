@@ -1,4 +1,4 @@
-# Now Playing: build steps
+# VYBE: build steps
 
 1. Install Flutter and the Android SDK (or skip this and use Codemagic, see below).
 2. Create the base project so Flutter generates the Gradle files and icons:
@@ -7,6 +7,7 @@
 
 3. Copy everything from this zip into that new `now_playing` folder, overwriting:
    - `pubspec.yaml`
+   - `assets/` (the VYBE icon and logo)
    - `lib/` (replace the whole folder)
    - `android/app/src/main/AndroidManifest.xml`
    - `android/app/src/main/kotlin/com/conjure/now_playing/` (MainActivity.kt, MediaListenerService.kt, BootReceiver.kt)
@@ -28,7 +29,7 @@
    The APK is at `build/app/outputs/flutter-apk/app-release.apk`.
 
 6. Sideload it onto the head unit, open it, tap "Open settings", and turn on
-   notification access for Now Playing. Start music in any player.
+   notification access for VYBE. Start music in any player.
 
 ## Using it
 - Tap the screen: controls appear for 5 seconds (theme switch, settings, previous, play/pause, next). A small label shows "live audio" or "simulated" so you can tell which visualizer is running.

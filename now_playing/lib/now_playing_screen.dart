@@ -790,8 +790,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
               ? Container(
                   color: const Color(0xFF111827),
                   child: Center(
-                    child: Icon(Icons.music_note,
-                        size: h * 0.2, color: Colors.white24),
+                    child: _brandIcon(h * 0.3),
                   ),
                 )
               : Image.memory(
@@ -1090,7 +1089,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
               width: s,
               height: s,
               color: const Color(0xFF111827),
-              child: Icon(Icons.music_note, size: s * 0.35, color: Colors.white24),
+              child: Center(child: _brandIcon(s * 0.55)),
             )
           : Image.memory(
               art.bytes,
@@ -1438,6 +1437,19 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     );
   }
 
+  /// The VYBE icon, shown where there is no album art.
+  Widget _brandIcon(double size) => Opacity(
+        opacity: 0.9,
+        child: Image.asset(
+          'assets/vybe_icon.png',
+          width: size,
+          height: size,
+          fit: BoxFit.contain,
+          errorBuilder: (context, error, stack) =>
+              Icon(Icons.music_note, size: size * 0.6, color: Colors.white24),
+        ),
+      );
+
   Widget _accessPrompt() {
     return Center(
       child: ConstrainedBox(
@@ -1447,7 +1459,14 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.music_note, size: 56, color: Colors.white54),
+              Image.asset(
+                'assets/vybe_logo.png',
+                width: 300,
+                errorBuilder: (context, error, stack) => const Icon(
+                    Icons.music_note,
+                    size: 56,
+                    color: Colors.white54),
+              ),
               const SizedBox(height: 20),
               const Text(
                 'Allow notification access',
@@ -1456,7 +1475,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
               const SizedBox(height: 12),
               const Text(
                 'Android only shares what is playing with apps that have '
-                'notification access. Turn it on for Now Playing, then come back.',
+                'notification access. Turn it on for VYBE, then come back.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 16, color: Colors.white70),
               ),
