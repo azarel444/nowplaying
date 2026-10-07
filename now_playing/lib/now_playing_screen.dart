@@ -250,7 +250,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   @override
   Widget build(BuildContext context) {
     final vhs = settings.theme == 2;
-    final fx = vhs ? settings.effects : 0.0;
+    final fx = vhs ? settings.vhsEffects : 0.0;
     final heavy = !settings.performance;
 
     return Scaffold(
@@ -304,7 +304,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                   offset: settings.theme == 3 ? Offset.zero : _shift,
                   child: Stack(
                     fit: StackFit.expand,
-                    children: [layout, if (vhs) _osd(h)],
+                    children: [layout, if (vhs) _osd(h, compact: narrow)],
                   ),
                 );
               }),
@@ -444,7 +444,12 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
             ),
           ),
         ),
-        RepaintBoundary(child: CustomPaint(painter: SunPainter(k: fx))),
+        RepaintBoundary(
+          child: CustomPaint(
+            painter: HorizonGlowPainter(
+                clock: fxClock, palette: _palette, k: fx, repaint: _tick),
+          ),
+        ),
         RepaintBoundary(
           child: CustomPaint(
               painter: GridPainter(state: grid, k: fx, repaint: _tick)),
@@ -483,11 +488,14 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
       ];
 
   /// Old-VCR on-screen display (top right): PLAY / PAUSE and a tape counter.
-  Widget _osd(double h) {
-    final size = (h * 0.05).clamp(18.0, 40.0).toDouble();
+  Widget _osd(double h, {required bool compact}) {
+    // On narrow (stacked) screens it is small and tucked into the corner.
+    final size = compact
+        ? (h * 0.02).clamp(11.0, 15.0).toDouble()
+        : (h * 0.05).clamp(18.0, 40.0).toDouble();
     return Positioned(
-      right: size,
-      top: size * 0.8,
+      right: compact ? 14 : size,
+      top: compact ? 10 : size * 0.8,
       child: AnimatedBuilder(
         animation: _slow,
         builder: (context, _) {
@@ -568,7 +576,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
           _artWithReflection(art),
           if (settings.visualizer) ...[
             SizedBox(height: h * 0.025),
-            SizedBox(width: w * 0.8, child: _bars(h * 0.12)),
+            SizedBox(width: art, child: _bars(h * 0.12)),
           ],
           SizedBox(height: h * 0.025),
         ],
@@ -861,6 +869,23 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     return Column(
       children: [
         SizedBox(width: w, height: h * 0.5, child: _edgeArt(w, h * 0.5)),
+        // The bars hang straight down from the bottom edge of the cover.
+        if (settings.visualizer)
+          SizedBox(
+            width: w,
+            height: h * 0.08,
+            child: RepaintBoundary(
+              child: CustomPaint(
+                painter: DownBarsPainter(
+                  sim: sim,
+                  palette: _palette,
+                  count: settings.barCount,
+                  gain: settings.sensitivity,
+                  repaint: _tick,
+                ),
+              ),
+            ),
+          ),
         Expanded(
           child: Center(
             child: FittedBox(
@@ -870,8 +895,6 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    _bars(h * 0.09),
-                    SizedBox(height: h * 0.02),
                     _title(h * 0.05, Alignment.center, false),
                     SizedBox(height: h * 0.01),
                     _artist(h * 0.022, Alignment.center, false),
@@ -1059,7 +1082,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
 
   /// RGB split: a pink and a cyan ghost behind the sharp text.
   Widget _split(Widget Function(Color) build, {Color main = Colors.white}) {
-    final d = 1.0 + 2.5 * settings.effects;
+    final d = 1.0 + 2.5 * settings.vhsEffects;
     return Stack(
       children: [
         Transform.translate(
@@ -1132,7 +1155,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
 
   /// Art card with a pink ghost to one side and a cyan ghost to the other.
   Widget _splitArt(double s) {
-    final d = s * (0.006 + 0.014 * settings.effects);
+    final d = s * (0.006 + 0.014 * settings.vhsEffects);
     Widget ghost(Color c, double dx) => Transform.translate(
           offset: Offset(dx, 0),
           child: Opacity(

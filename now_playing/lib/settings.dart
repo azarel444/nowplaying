@@ -37,7 +37,8 @@ class AppSettings extends ChangeNotifier {
   int vizStyle = 0; // Focused theme: 0 ring, 1 bars
   int barCount = 96;
   int accent = 0;
-  double effects = 0.7; // VHS effect strength 0 .. 1
+  double vhsEffects = 0.7; // VHS look strength 0 .. 1
+  double effects = 0.7; // strength of the other effects 0 .. 1
   bool bgEffects = true; // slow drift + beat pulse
   bool particles = false;
   bool performance = false;
@@ -68,6 +69,10 @@ class AppSettings extends ChangeNotifier {
     barCount = barCounts.contains(bc) ? bc : 96;
     accent = _int(p, 'accent', 0, 0, accents.length - 1);
     effects = (p.getDouble('effects') ?? 0.7).clamp(0.0, 1.0).toDouble();
+    // Older versions had one slider; start the VHS one at that value.
+    vhsEffects = (p.getDouble('vhsEffects') ?? p.getDouble('effects') ?? 0.7)
+        .clamp(0.0, 1.0)
+        .toDouble();
     bgEffects = p.getBool('bgEffects') ?? true;
     particles = p.getBool('particles') ?? false;
     performance = p.getBool('performance') ?? false;
@@ -101,6 +106,7 @@ class AppSettings extends ChangeNotifier {
     await p.setInt('barCount', barCount);
     await p.setInt('accent', accent);
     await p.setDouble('effects', effects);
+    await p.setDouble('vhsEffects', vhsEffects);
     await p.setBool('bgEffects', bgEffects);
     await p.setBool('particles', particles);
     await p.setBool('performance', performance);

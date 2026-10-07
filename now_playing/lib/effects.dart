@@ -188,44 +188,72 @@ class GlitchPainter extends CustomPainter {
 
 const double _horizon = 0.66;
 
-/// Retro striped sun sitting on the horizon. Static, so it is cached.
-class SunPainter extends CustomPainter {
+/// A soft glow resting on the horizon in the album's main color. It swells
+/// a little on bass.
+class HorizonGlowPainter extends CustomPainter {
+  final FxClock clock;
+  final ArtPalette palette;
   final double k;
-  SunPainter({required this.k});
+
+  HorizonGlowPainter({
+    required this.clock,
+    required this.palette,
+    required this.k,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
 
   @override
   void paint(Canvas canvas, Size size) {
     final hy = size.height * _horizon;
-    final r = math.min(size.width, size.height) * 0.26;
-    final c = Offset(size.width * 0.5, hy - r * 0.45);
-    final rect = Rect.fromCircle(center: c, radius: r);
+    final r = math.min(size.width, size.height) * 0.55 * (1 + 0.08 * clock.bass);
+    final main = palette.a;
+    final core = Color.lerp(main, Colors.white, 0.35)!;
 
-    canvas.saveLayer(Rect.fromLTWH(0, 0, size.width, hy), Paint());
-    canvas.clipRect(Rect.fromLTWH(0, 0, size.width, hy));
+    canvas.save();
+    canvas.translate(size.width * 0.5, hy);
+    canvas.scale(1.0, 0.5); // a wide, low glow that sits on the horizon
     canvas.drawCircle(
-      c,
+      Offset.zero,
       r,
       Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Color.fromRGBO(255, 224, 102, _a(0.55 * k)),
-            Color.fromRGBO(255, 46, 147, _a(0.55 * k)),
-          ],
-        ).createShader(rect),
+        ..shader = ui.Gradient.radial(Offset.zero, r, [
+          main.withOpacity(_a((0.55 + 0.25 * clock.bass) * k)),
+          main.withOpacity(0),
+        ]),
     );
-    final clear = Paint()..blendMode = BlendMode.clear;
-    for (int i = 0; i < 6; i++) {
-      final yy = c.dy + r * (0.05 + i * 0.16);
-      final hh = r * (0.02 + 0.016 * i);
-      canvas.drawRect(Rect.fromLTWH(c.dx - r, yy, 2 * r, hh), clear);
-    }
+    final r2 = r * 0.4;
+    canvas.drawCircle(
+      Offset.zero,
+      r2,
+      Paint()
+        ..shader = ui.Gradient.radial(Offset.zero, r2, [
+          core.withOpacity(_a((0.5 + 0.3 * clock.bass) * k)),
+          core.withOpacity(0),
+        ]),
+    );
     canvas.restore();
+
+    final x0 = size.width * 0.15;
+    final x1 = size.width * 0.85;
+    canvas.drawRect(
+      Rect.fromLTWH(x0, hy - 1, x1 - x0, 2),
+      Paint()
+        ..shader = ui.Gradient.linear(
+          Offset(x0, hy),
+          Offset(x1, hy),
+          [
+            main.withOpacity(0),
+            main.withOpacity(_a(0.8 * k)),
+            main.withOpacity(0),
+          ],
+          const [0.0, 0.5, 1.0],
+        ),
+    );
   }
 
   @override
-  bool shouldRepaint(SunPainter old) => old.k != k;
+  bool shouldRepaint(HorizonGlowPainter old) =>
+      old.palette != palette || old.k != k;
 }
 
 class GridState {

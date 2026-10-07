@@ -134,7 +134,16 @@ class SettingsScreen extends StatelessWidget {
           s.vhsVaporwave, (v) => s.update(() => s.vhsVaporwave = v)),
       _section('Effects'),
       _slider(
-        'Effect strength',
+        'VHS effect strength',
+        '${(s.vhsEffects * 100).round()}%',
+        s.vhsEffects,
+        0.0,
+        1.0,
+        (v) => s.update(() => s.vhsEffects = v, persist: false),
+        s.save,
+      ),
+      _slider(
+        'Other effects strength',
         '${(s.effects * 100).round()}%',
         s.effects,
         0.0,

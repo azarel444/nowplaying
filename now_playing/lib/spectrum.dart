@@ -278,3 +278,42 @@ class VerticalBarsPainter extends CustomPainter {
   bool shouldRepaint(VerticalBarsPainter old) =>
       old.palette != palette || old.count != count || old.gain != gain;
 }
+
+/// Bars hanging down from the top edge of their box. Used under the cover
+/// in the narrow Edge to Edge layout, so the bars grow away from the art's
+/// bottom edge. Bass is on the left.
+class DownBarsPainter extends CustomPainter {
+  final SpectrumSim sim;
+  final ArtPalette palette;
+  final int count;
+  final double gain;
+
+  DownBarsPainter({
+    required this.sim,
+    required this.palette,
+    required this.count,
+    required this.gain,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final n = count;
+    final step = size.width / n;
+    final p = Paint()
+      ..strokeCap = StrokeCap.butt
+      ..strokeWidth = step * 0.62
+      ..shader = LinearGradient(colors: palette.colors)
+          .createShader(Offset.zero & size);
+    for (int i = 0; i < n; i++) {
+      final idx = n > 1 ? (i * (SpectrumSim.bars - 1) / (n - 1)).round() : 0;
+      final len = math.max(2.0, sim.level(idx, gain) * size.height);
+      final x = step * (i + 0.5);
+      canvas.drawLine(Offset(x, 0), Offset(x, len), p);
+    }
+  }
+
+  @override
+  bool shouldRepaint(DownBarsPainter old) =>
+      old.palette != palette || old.count != count || old.gain != gain;
+}
