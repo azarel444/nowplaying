@@ -35,8 +35,11 @@ class NowPlayingModel extends ChangeNotifier {
   int _artToken = 0;
   int _lyricsToken = 0;
   Timer? _netTimer;
-  bool? _sentBoot;
-  bool? _sentMusic;
+  Timer? _artClearTimer;
+  Timer? _idleTimer;
+  String _albumKey = '';
+  bool _needsArt = false; // album changed and the player sent no new cover yet
+  String _sentLaunch = '';
   final Map<String, Uint8List> _artCache = {};
   final Map<String, List<LyricLine>?> _lyricsCache = {};
   StreamSubscription? _sub;
@@ -74,6 +77,8 @@ class NowPlayingModel extends ChangeNotifier {
     _sub?.cancel();
     _fftSub?.cancel();
     _netTimer?.cancel();
+    _artClearTimer?.cancel();
+    _idleTimer?.cancel();
     super.dispose();
   }
 
@@ -90,24 +95,33 @@ class NowPlayingModel extends ChangeNotifier {
   void _onEvent(dynamic e) {
     final m = Map<String, dynamic>.from(e as Map);
     accessGranted = m['access'] == true;
-    active = m['active'] == true;
+    final nowActive = m['active'] == true;
 
-    if (!accessGranted || !active) {
-      playing = false;
-      if (!active) {
-        title = '';
-        artist = '';
-        album = '';
-        durationMs = 0;
-        _trackKey = '';
-        _artToken++;
-        art = null;
-        lyrics = null;
-        _lyricsToken++;
-      }
+    if (!accessGranted) {
+      _idleTimer?.cancel();
+      active = false;
+      _clearAll();
       notifyListeners();
       return;
     }
+
+    if (!nowActive) {
+      // Players sometimes drop their session for a moment between songs or
+      // albums. Wait before treating it as "nothing playing", so the screen
+      // does not flash the empty state.
+      playing = false;
+      _idleTimer ??= Timer(const Duration(milliseconds: 2500), () {
+        _idleTimer = null;
+        active = false;
+        _clearAll();
+        notifyListeners();
+      });
+      notifyListeners();
+      return;
+    }
+    _idleTimer?.cancel();
+    _idleTimer = null;
+    active = true;
 
     playing = m['playing'] == true;
     title = (m['title'] as String?) ?? '';
@@ -118,18 +132,39 @@ class NowPlayingModel extends ChangeNotifier {
     _speed = (m['speed'] as num?)?.toDouble() ?? 1.0;
     _stamp = DateTime.now();
 
-    final key = '$title|$artist|$album|$durationMs';
+    // The song's length often arrives a moment after its title, so it is
+    // left out of the key: it must not count as a track change.
+    final key = '$title|$artist|$album';
     final changed = key != _trackKey;
+    final albumKey = '${artist.toLowerCase()}|${album.toLowerCase()}';
+    final albumChanged = albumKey != _albumKey;
+
     final artBytes = m['art'];
     if (artBytes is Uint8List) {
+      _artClearTimer?.cancel();
+      _needsArt = false;
       if (art == null || !listEquals(art!.bytes, artBytes)) {
         _setArt(artBytes);
       }
-    } else if (key != _trackKey) {
-      _artToken++;
-      art = null;
+    } else if (changed && art != null) {
+      // Keep showing the current cover. Within the same album it stays for
+      // good. If the album changed and no new cover shows up in a few
+      // seconds, drop it so the placeholder (or an online lookup) takes over.
+      if (albumChanged || album.isEmpty) {
+        _needsArt = true;
+        _artClearTimer?.cancel();
+        _artClearTimer = Timer(const Duration(seconds: 3), () {
+          if (!_needsArt) return;
+          _artToken++;
+          art = null;
+          notifyListeners();
+          if (artLookupEnabled && title.isNotEmpty) _lookupArt();
+        });
+      }
     }
     _trackKey = key;
+    _albumKey = albumKey;
+
     if (changed) {
       lyrics = null;
       _lyricsToken++;
@@ -138,6 +173,21 @@ class NowPlayingModel extends ChangeNotifier {
       _netTimer = Timer(const Duration(milliseconds: 700), _runNetwork);
     }
     notifyListeners();
+  }
+
+  void _clearAll() {
+    title = '';
+    artist = '';
+    album = '';
+    durationMs = 0;
+    _trackKey = '';
+    _albumKey = '';
+    _needsArt = false;
+    _artClearTimer?.cancel();
+    _artToken++;
+    art = null;
+    lyrics = null;
+    _lyricsToken++;
   }
 
   void _runNetwork() {
@@ -211,6 +261,8 @@ class NowPlayingModel extends ChangeNotifier {
     final loaded = await ArtAssets.load(bytes);
     if (token != _artToken) return;
     art = loaded;
+    _needsArt = false;
+    _artClearTimer?.cancel();
     notifyListeners();
   }
 
@@ -238,13 +290,28 @@ class NowPlayingModel extends ChangeNotifier {
   }
   Future<void> openOverlaySettings() => _call('openOverlaySettings');
 
-  /// Tells the Kotlin side whether to launch the app at boot / when music starts.
-  void setLaunchOptions(bool boot, bool music) {
-    if (_sentBoot == boot && _sentMusic == music) return;
-    _sentBoot = boot;
-    _sentMusic = music;
-    _control.invokeMethod('setLaunchOptions', {'boot': boot, 'music': music})
-        .catchError((_) {});
+  /// Tells the Kotlin side when it may open VYBE by itself.
+  void setLaunchSettings({
+    required bool boot,
+    required bool music,
+    required int graceSec,
+    required bool allowVideo,
+    required bool allowNav,
+    required bool avoidNav,
+    required String navPkg,
+  }) {
+    final key = '$boot|$music|$graceSec|$allowVideo|$allowNav|$avoidNav|$navPkg';
+    if (key == _sentLaunch) return;
+    _sentLaunch = key;
+    _control.invokeMethod('setLaunchSettings', {
+      'boot': boot,
+      'music': music,
+      'graceSec': graceSec,
+      'allowVideo': allowVideo,
+      'allowNav': allowNav,
+      'avoidNav': avoidNav,
+      'navPkg': navPkg,
+    }).catchError((_) {});
   }
 
   Future<void> startVisualizer() => _call('startVisualizer');

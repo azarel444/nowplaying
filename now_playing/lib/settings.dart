@@ -5,7 +5,13 @@ import 'palette.dart';
 
 /// All user-adjustable options, saved on the device.
 class AppSettings extends ChangeNotifier {
-  static const themeNames = ['Focused', 'Side by Side', 'VHS', 'Edge to Edge'];
+  static const themeNames = [
+    'Focused',
+    'Side by Side',
+    'VHS',
+    'Edge to Edge',
+    'Drive',
+  ];
   static const accentNames = [
     'Auto (from art)',
     'Vaporwave',
@@ -31,7 +37,7 @@ class AppSettings extends ChangeNotifier {
 
   static const barCounts = [32, 48, 64, 96];
 
-  int theme = 0; // 0 Focused, 1 Side by Side, 2 VHS, 3 Edge to Edge
+  int theme = 0; // 0 Focused, 1 Side by Side, 2 VHS, 3 Edge to Edge, 4 Drive
   bool visualizer = true;
   double sensitivity = 1.0; // 0.5 .. 1.5
   int vizStyle = 0; // Focused theme: 0 ring, 1 bars
@@ -56,12 +62,22 @@ class AppSettings extends ChangeNotifier {
   bool fxWater = false;
   bool fxBloom = false;
 
+  bool onboarded = false; // the first-launch tour has been shown
+  String navPkg = ''; // navigation app (empty = find one automatically)
+  String navLabel = '';
+  bool driveSwap = false; // Drive theme: navigation card on the left
+  double driveCardWidth = 0.5; // Drive theme: card width, 0.35 .. 0.65
+  int graceSec = 60; // pause shorter than this is the same listening session
+  bool allowVideo = false; // let video apps open VYBE
+  bool allowNavAudio = false; // let navigation audio open VYBE
+  bool avoidNav = true; // never open VYBE while navigation is active
+
   ArtPalette? get accentPalette =>
       (accent > 0 && accent < accents.length) ? accents[accent] : null;
 
   Future<void> load() async {
     final p = await SharedPreferences.getInstance();
-    theme = _int(p, 'theme', 0, 0, 3);
+    theme = _int(p, 'theme', 0, 0, 4);
     visualizer = p.getBool('visualizer') ?? true;
     sensitivity = (p.getDouble('sensitivity') ?? 1.0).clamp(0.5, 1.5).toDouble();
     vizStyle = _int(p, 'vizStyle', 0, 0, 1);
@@ -89,6 +105,17 @@ class AppSettings extends ChangeNotifier {
     fxRipples = p.getBool('fxRipples') ?? false;
     fxWater = p.getBool('fxWater') ?? false;
     fxBloom = p.getBool('fxBloom') ?? false;
+    onboarded = p.getBool('onboarded') ?? false;
+    navPkg = p.getString('navPkg') ?? '';
+    navLabel = p.getString('navLabel') ?? '';
+    driveSwap = p.getBool('driveSwap') ?? false;
+    driveCardWidth =
+        (p.getDouble('driveCardWidth') ?? 0.5).clamp(0.35, 0.65).toDouble();
+    final g = p.getInt('graceSec') ?? 60;
+    graceSec = const [30, 60, 300].contains(g) ? g : 60;
+    allowVideo = p.getBool('allowVideo') ?? false;
+    allowNavAudio = p.getBool('allowNavAudio') ?? false;
+    avoidNav = p.getBool('avoidNav') ?? true;
     notifyListeners();
   }
 
@@ -123,6 +150,15 @@ class AppSettings extends ChangeNotifier {
     await p.setBool('fxRipples', fxRipples);
     await p.setBool('fxWater', fxWater);
     await p.setBool('fxBloom', fxBloom);
+    await p.setBool('onboarded', onboarded);
+    await p.setString('navPkg', navPkg);
+    await p.setString('navLabel', navLabel);
+    await p.setBool('driveSwap', driveSwap);
+    await p.setDouble('driveCardWidth', driveCardWidth);
+    await p.setInt('graceSec', graceSec);
+    await p.setBool('allowVideo', allowVideo);
+    await p.setBool('allowNavAudio', allowNavAudio);
+    await p.setBool('avoidNav', avoidNav);
   }
 
   /// Apply a change, tell listeners, and (by default) save it.

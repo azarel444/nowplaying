@@ -10,7 +10,7 @@
    - `assets/` (the VYBE icon and logo)
    - `lib/` (replace the whole folder)
    - `android/app/src/main/AndroidManifest.xml`
-   - `android/app/src/main/kotlin/com/conjure/now_playing/` (MainActivity.kt, MediaListenerService.kt, BootReceiver.kt)
+   - `android/app/src/main/kotlin/com/conjure/now_playing/` (MainActivity.kt, MediaListenerService.kt, PlayerFilter.kt, BootReceiver.kt)
    - `android/app/src/main/res/mipmap-*` (the app icon)
 
 4. If the build complains about minSdk, open `android/app/build.gradle`
@@ -33,7 +33,10 @@
 
 ## Using it
 - Tap the screen: controls appear for 5 seconds (theme switch, settings, previous, play/pause, next). A small label shows "live audio" or "simulated" so you can tell which visualizer is running.
-- Themes (the first button cycles them): Focused, Side by Side, VHS, Edge to Edge.
+- Themes (the first button cycles them): Focused, Side by Side, VHS, Edge to Edge, Drive.
+- Drive: music on one side and a frame for navigation on the other. The Navigation button asks Android to open your nav app in a window the size of the frame. This needs freeform windows switched on in the head unit (Developer options, "Enable freeform windows") and a nav app that can be resized; otherwise the nav app opens full screen. Settings can swap the sides and change the card width.
+- First launch shows a splash and a tour that explains each permission before Android asks for it. It can be replayed from Settings under Permissions and privacy.
+- Auto-open only fires when a music player starts (a session), never on track changes, short pauses, video, navigation voice or calls, and never while navigation is guiding. Settings has a per-player list.
 - Optional effects (settings, all off by default): breathing glow, aurora sweep, light rays, beat ripples, water shimmer, cover bloom. Performance mode turns them all off.
 - Settings (gear button): visualizer on/off, sensitivity, ring or bars, bar count, accent colors, VHS strength, background drift and beat pulse, particles, performance mode, night mode, burn-in protection.
 - Seek: drag the progress bar in the controls. Tap the album cover to open the player app.

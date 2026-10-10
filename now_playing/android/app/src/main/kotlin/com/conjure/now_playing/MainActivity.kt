@@ -1,10 +1,12 @@
 package com.conjure.now_playing
 
+import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Rect
 import android.media.MediaMetadata
 import android.media.session.MediaController
 import android.media.session.MediaSessionManager
@@ -103,14 +105,40 @@ class MainActivity : FlutterActivity() {
                 }
                 "openPlayer" -> result.success(openPlayer())
                 "openOverlaySettings" -> { openOverlaySettings(); result.success(null) }
-                "setLaunchOptions" -> {
-                    val boot = call.argument<Boolean>("boot") ?: false
-                    val music = call.argument<Boolean>("music") ?: false
-                    getSharedPreferences("np_prefs", Context.MODE_PRIVATE).edit()
-                        .putBoolean("openOnBoot", boot)
-                        .putBoolean("openOnMusic", music)
+                "setLaunchSettings" -> {
+                    getSharedPreferences(PlayerFilter.PREFS, Context.MODE_PRIVATE).edit()
+                        .putBoolean("openOnBoot", call.argument<Boolean>("boot") ?: false)
+                        .putBoolean("openOnMusic", call.argument<Boolean>("music") ?: false)
+                        .putInt("graceSec", call.argument<Int>("graceSec") ?: 60)
+                        .putBoolean("allowVideo", call.argument<Boolean>("allowVideo") ?: false)
+                        .putBoolean("allowNav", call.argument<Boolean>("allowNav") ?: false)
+                        .putBoolean("avoidNav", call.argument<Boolean>("avoidNav") ?: true)
+                        .putString("navPkg", call.argument<String>("navPkg") ?: "")
                         .apply()
                     result.success(null)
+                }
+                "getPlayers" -> result.success(getPlayers())
+                "setPlayerOverride" -> {
+                    val pkg = call.argument<String>("pkg")
+                    val mode = call.argument<String>("mode") ?: "auto"
+                    if (pkg != null) {
+                        PlayerFilter.setOverride(
+                            getSharedPreferences(PlayerFilter.PREFS, Context.MODE_PRIVATE), pkg, mode)
+                    }
+                    result.success(null)
+                }
+                "permissionStatus" -> result.success(permissionStatus())
+                "requestAudio" -> requestAudioForOnboarding(result)
+                "getInstalledApps" -> result.success(getInstalledApps())
+                "launchNavigation" -> {
+                    val pkg = call.argument<String>("pkg") ?: ""
+                    val l = call.argument<Int>("left")
+                    val t = call.argument<Int>("top")
+                    val r = call.argument<Int>("right")
+                    val b = call.argument<Int>("bottom")
+                    val bounds = if (l != null && t != null && r != null && b != null && r > l && b > t)
+                        Rect(l, t, r, b) else null
+                    result.success(launchNavigation(pkg, bounds))
                 }
                 else -> result.notImplemented()
             }
@@ -151,7 +179,16 @@ class MainActivity : FlutterActivity() {
 
     private fun pick(list: List<MediaController>?) {
         try { controller?.unregisterCallback(callback) } catch (_: Exception) {}
-        val chosen = list?.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+        // Prefer a music player over navigation voice or video sessions, and
+        // a playing session over an idle one.
+        val prefs = getSharedPreferences(PlayerFilter.PREFS, Context.MODE_PRIVATE)
+        fun isMusic(c: MediaController) =
+            PlayerFilter.classify(this, c.packageName, c.metadata) == PlayerFilter.Kind.MUSIC ||
+                PlayerFilter.modeOf(prefs, c.packageName) == "allow"
+        fun isPlaying(c: MediaController) = c.playbackState?.state == PlaybackState.STATE_PLAYING
+        val chosen = list?.firstOrNull { isMusic(it) && isPlaying(it) }
+            ?: list?.firstOrNull { isMusic(it) }
+            ?: list?.firstOrNull { isPlaying(it) }
             ?: list?.firstOrNull()
         controller = chosen
         lastTrackKey = null
@@ -257,6 +294,117 @@ class MainActivity : FlutterActivity() {
         return "Could not open $pkg"
     }
 
+    private fun getPlayers(): List<Map<String, Any>> {
+        val prefs = getSharedPreferences(PlayerFilter.PREFS, Context.MODE_PRIVATE)
+        val out = ArrayList<Map<String, Any>>()
+        for (entry in prefs.getStringSet("seen_players", emptySet()) ?: emptySet()) {
+            val a = entry.indexOf('|')
+            val b = if (a >= 0) entry.indexOf('|', a + 1) else -1
+            if (a < 0 || b < 0) continue
+            val pkg = entry.substring(0, a)
+            val kind = try {
+                PlayerFilter.Kind.valueOf(entry.substring(a + 1, b))
+            } catch (_: Exception) {
+                PlayerFilter.Kind.OTHER
+            }
+            out.add(mapOf(
+                "pkg" to pkg,
+                "label" to entry.substring(b + 1),
+                "kind" to kind.name,
+                "override" to PlayerFilter.modeOf(prefs, pkg),
+                "allowed" to PlayerFilter.allowed(prefs, pkg, kind),
+            ))
+        }
+        out.sortBy { (it["label"] as String).lowercase() }
+        return out
+    }
+
+    private fun permissionStatus(): Map<String, Boolean> {
+        val audio = Build.VERSION.SDK_INT < 23 ||
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val overlay = Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this)
+        return mapOf("notification" to hasAccess(), "audio" to audio, "overlay" to overlay)
+    }
+
+    private var pendingAudioResult: MethodChannel.Result? = null
+
+    /** Asks for the audio permission and answers once the person has decided. */
+    private fun requestAudioForOnboarding(result: MethodChannel.Result) {
+        if (Build.VERSION.SDK_INT < 23 ||
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) {
+            result.success(true)
+            return
+        }
+        pendingAudioResult?.success(false)
+        pendingAudioResult = result
+        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO_ONBOARD)
+    }
+
+    private fun getInstalledApps(): List<Map<String, String>> {
+        return try {
+            val pm = packageManager
+            val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            val seen = HashSet<String>()
+            val out = ArrayList<Map<String, String>>()
+            for (ri in pm.queryIntentActivities(i, 0)) {
+                val pkg = ri.activityInfo.packageName
+                if (pkg == packageName || !seen.add(pkg)) continue
+                out.add(mapOf("pkg" to pkg, "label" to ri.loadLabel(pm).toString()))
+            }
+            out.sortBy { it["label"]!!.lowercase() }
+            out
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private val knownNavApps = listOf(
+        "com.google.android.apps.maps", "com.waze", "com.sygic.aura",
+        "com.here.app.maps", "net.osmand", "net.osmand.plus", "app.organicmaps",
+        "com.mapfactor.navigator", "com.tomtom.gplay.navapp"
+    )
+
+    /**
+     * Opens the navigation app, asking Android to put it in a window of the
+     * given size (pixels) on top of VYBE. That only takes effect if the head
+     * unit has freeform windows switched on and the nav app can be resized;
+     * otherwise Android opens it full screen as usual.
+     *
+     * Returns "ok" (a window was requested), "full" (opened normally),
+     * "nopkg" (no nav app chosen or found) or "none" (could not open it).
+     */
+    private fun launchNavigation(pkgIn: String, bounds: Rect?): String {
+        var pkg = pkgIn
+        if (pkg.isEmpty()) {
+            pkg = knownNavApps.firstOrNull { packageManager.getLaunchIntentForPackage(it) != null } ?: ""
+        }
+        if (pkg.isEmpty()) return "nopkg"
+        val launch = packageManager.getLaunchIntentForPackage(pkg) ?: return "none"
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (bounds != null && Build.VERSION.SDK_INT >= 24) {
+            try {
+                val opts = ActivityOptions.makeBasic().setLaunchBounds(bounds)
+                try {
+                    // 5 = freeform. Hidden API; ignored when not available.
+                    val m = ActivityOptions::class.java
+                        .getMethod("setLaunchWindowingMode", Int::class.javaPrimitiveType)
+                    m.invoke(opts, 5)
+                } catch (_: Throwable) {
+                }
+                startActivity(launch, opts.toBundle())
+                return "ok"
+            } catch (_: Exception) {
+            }
+        }
+        return try {
+            startActivity(launch)
+            "full"
+        } catch (_: Exception) {
+            "none"
+        }
+    }
+
     /** "Display over other apps" lets the app open itself from the background. */
     private fun openOverlaySettings() {
         try {
@@ -352,6 +500,12 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_AUDIO_ONBOARD) {
+            pendingAudioResult?.success(
+                grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+            pendingAudioResult = null
+            return
+        }
         if (requestCode == REQ_AUDIO &&
             grantResults.isNotEmpty() &&
             grantResults[0] == PackageManager.PERMISSION_GRANTED
@@ -360,15 +514,17 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    override fun onResume() {
-        super.onResume()
+    // "On screen" means started, not resumed: in a split or freeform window
+    // VYBE can be paused (another window has focus) but still visible.
+    override fun onStart() {
+        super.onStart()
         visible = true
     }
 
-    override fun onPause() {
+    override fun onStop() {
         visible = false
         stopVisualizer()
-        super.onPause()
+        super.onStop()
     }
 
     companion object {
@@ -377,6 +533,7 @@ class MainActivity : FlutterActivity() {
 
         private const val BANDS = 96
         private const val REQ_AUDIO = 4711
+        private const val REQ_AUDIO_ONBOARD = 4712
     }
 
     override fun onDestroy() {

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import 'effects.dart';
+import 'native.dart';
 import 'now_playing_model.dart';
 import 'palette.dart';
 import 'settings.dart';
@@ -50,6 +51,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   final fxClock = FxClock();
   final ripples = RippleState();
   final _artKey = GlobalKey(); // lets rings and rays find the cover
+  final _navKey = GlobalKey(); // the navigation card in the Drive theme
   ArtPalette? _lastArtPalette;
   double _artNullSince = -1;
 
@@ -130,7 +132,15 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     if (model.lyricsEnabled != settings.lyrics) {
       model.setLyricsEnabled(settings.lyrics);
     }
-    model.setLaunchOptions(settings.bootStart, settings.musicStart);
+    model.setLaunchSettings(
+      boot: settings.bootStart,
+      music: settings.musicStart,
+      graceSec: settings.graceSec,
+      allowVideo: settings.allowVideo,
+      allowNav: settings.allowNavAudio,
+      avoidNav: settings.avoidNav,
+      navPkg: settings.navPkg,
+    );
     _updateClock();
     setState(() {});
   }
@@ -225,7 +235,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   }
 
   void _toggleTheme() {
-    settings.update(() => settings.theme = (settings.theme + 1) % 4);
+    settings.update(() => settings.theme = (settings.theme + 1) % 5);
     _poke();
   }
 
@@ -287,7 +297,9 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 // then song info and lyrics) when the screen gets narrow.
                 final narrow = w < h * 1.3;
                 final Widget layout;
-                if (settings.theme == 3) {
+                if (settings.theme == 4) {
+                  layout = _driveLayout(w, h, narrow);
+                } else if (settings.theme == 3) {
                   layout = narrow ? _edgeNarrow(w, h) : _edgeLayout(w, h);
                 } else if (vhs) {
                   layout = narrow
@@ -301,7 +313,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                   layout = _focused(w, h);
                 }
                 return Transform.translate(
-                  offset: settings.theme == 3 ? Offset.zero : _shift,
+                  offset: settings.theme >= 3 ? Offset.zero : _shift,
                   child: Stack(
                     fit: StackFit.expand,
                     children: [layout, if (vhs) _osd(h, compact: narrow)],
@@ -777,6 +789,230 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
         ),
       ),
     );
+  }
+
+  // ------------------------------------------------------------------ drive
+
+  /// Opens the navigation app. In the Drive theme it asks Android for a
+  /// window exactly the size of the card (a little inside its border).
+  Future<void> _openNavigation() async {
+    Rect? bounds;
+    final box = _navKey.currentContext?.findRenderObject();
+    if (settings.theme == 4 && box is RenderBox && box.attached && box.hasSize) {
+      final tl = box.localToGlobal(Offset.zero);
+      final dpr = MediaQuery.of(context).devicePixelRatio;
+      const inset = 8.0;
+      bounds = Rect.fromLTWH(
+        (tl.dx + inset) * dpr,
+        (tl.dy + inset) * dpr,
+        (box.size.width - 2 * inset) * dpr,
+        (box.size.height - 2 * inset) * dpr,
+      );
+    }
+    final r = await Native.launchNavigation(settings.navPkg, bounds);
+    if (!mounted) return;
+    String? msg;
+    if (r == 'nopkg') {
+      msg = 'No navigation app found. Choose one in Settings.';
+    } else if (r == 'none') {
+      msg = 'Could not open the navigation app.';
+    } else if (r == 'full' && bounds != null) {
+      msg = 'Opened full screen. This unit did not allow a window.';
+    }
+    if (msg != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg), duration: const Duration(seconds: 4)),
+      );
+    }
+  }
+
+  /// Music on one side and a card for navigation on the other. VYBE cannot
+  /// draw another app's map, so the card is a frame: the navigation button
+  /// asks Android to open the nav app in a window the size of the card.
+  Widget _driveLayout(double w, double h, bool narrow) {
+    final gap = math.min(w, h) * 0.025;
+    final frac = settings.driveCardWidth;
+    final swap = settings.driveSwap;
+    final music = Padding(padding: EdgeInsets.all(gap), child: _drivePane());
+    final card = Padding(padding: EdgeInsets.all(gap), child: _navCard());
+    if (narrow) {
+      return Column(
+        children: [
+          Expanded(flex: 6, child: swap ? card : music),
+          Expanded(flex: 5, child: swap ? music : card),
+        ],
+      );
+    }
+    final musicFlex = ((1 - frac) * 100).round();
+    final cardFlex = (frac * 100).round();
+    return Row(
+      children: [
+        Expanded(flex: swap ? cardFlex : musicFlex, child: swap ? card : music),
+        Expanded(flex: swap ? musicFlex : cardFlex, child: swap ? music : card),
+      ],
+    );
+  }
+
+  Widget _drivePane() {
+    return LayoutBuilder(builder: (context, box) {
+      final pw = box.maxWidth, ph = box.maxHeight;
+      final art = math.min(pw * 0.6, ph * 0.42);
+      final cw = pw * 0.88;
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0x66000000),
+          borderRadius: BorderRadius.circular(ph * 0.04),
+          border: Border.all(color: Colors.white12),
+        ),
+        child: Center(
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: SizedBox(
+              width: cw,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _front(art, false),
+                  SizedBox(height: ph * 0.035),
+                  _title(ph * 0.06, Alignment.center, false),
+                  SizedBox(height: ph * 0.008),
+                  _artist(ph * 0.026, Alignment.center, false),
+                  if (_hasLyrics) ...[
+                    SizedBox(height: ph * 0.015),
+                    _lyricLine(ph * 0.03, Alignment.center),
+                  ],
+                  SizedBox(height: ph * 0.02),
+                  _seekBar(width: cw),
+                  SizedBox(
+                    width: cw,
+                    child: AnimatedBuilder(
+                      animation: _slow,
+                      builder: (context, _) => Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(_fmt(model.positionMs),
+                              style: const TextStyle(
+                                  color: Colors.white60, fontSize: 15)),
+                          Text(_fmt(model.durationMs),
+                              style: const TextStyle(
+                                  color: Colors.white60, fontSize: 15)),
+                        ],
+                      ),
+                    ),
+                  ),
+                  _driveButtons(ph),
+                  if (settings.visualizer) ...[
+                    SizedBox(height: ph * 0.02),
+                    _bars(ph * 0.07),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    });
+  }
+
+  Widget _driveButtons(double ph) {
+    final small = (ph * 0.085).clamp(32.0, 64.0).toDouble();
+    final big = (ph * 0.1).clamp(44.0, 80.0).toDouble();
+    Widget skip(IconData icon, VoidCallback onTap) => IconButton(
+          iconSize: small,
+          padding: EdgeInsets.all(small * 0.2),
+          color: Colors.white,
+          icon: Icon(icon),
+          onPressed: onTap,
+        );
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        skip(Icons.skip_previous_rounded, model.previous),
+        SizedBox(width: small * 0.4),
+        GestureDetector(
+          onTap: model.playPause,
+          child: Container(
+            width: big * 1.3,
+            height: big * 1.3,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: _palette.a,
+              boxShadow: [
+                BoxShadow(
+                    color: _palette.a.withOpacity(0.45), blurRadius: big * 0.4),
+              ],
+            ),
+            child: Icon(
+              model.playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
+              size: big,
+              color: Colors.black,
+            ),
+          ),
+        ),
+        SizedBox(width: small * 0.4),
+        skip(Icons.skip_next_rounded, model.next),
+      ],
+    );
+  }
+
+  /// The frame where the navigation window goes.
+  Widget _navCard() {
+    final p = _palette;
+    return LayoutBuilder(builder: (context, box) {
+      final s = math.min(box.maxWidth, box.maxHeight);
+      return Container(
+        key: _navKey,
+        decoration: BoxDecoration(
+          color: const Color(0xCC05070D),
+          borderRadius: BorderRadius.circular(s * 0.05),
+          border: Border.all(color: p.a.withOpacity(0.8), width: 1.5),
+          boxShadow: [
+            BoxShadow(color: p.a.withOpacity(0.3), blurRadius: s * 0.06),
+            BoxShadow(color: p.c.withOpacity(0.2), blurRadius: s * 0.1),
+          ],
+        ),
+        child: Center(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.navigation_rounded,
+                    size: (s * 0.16).clamp(36.0, 120.0).toDouble(), color: p.a),
+                SizedBox(height: s * 0.03),
+                Text(
+                  'Navigation',
+                  style: TextStyle(
+                    fontSize: (s * 0.05).clamp(20.0, 36.0).toDouble(),
+                    fontWeight: FontWeight.w300,
+                  ),
+                ),
+                SizedBox(height: s * 0.01),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: s * 0.08),
+                  child: Text(
+                    'Opens your navigation app in this card.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: (s * 0.03).clamp(14.0, 20.0).toDouble(),
+                      color: Colors.white54,
+                    ),
+                  ),
+                ),
+                SizedBox(height: s * 0.04),
+                ElevatedButton.icon(
+                  onPressed: _openNavigation,
+                  icon: const Icon(Icons.navigation_rounded),
+                  label: const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                    child: Text('Open navigation', style: TextStyle(fontSize: 18)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    });
   }
 
   // ---------------------------------------------------------- edge to edge
@@ -1371,6 +1607,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
               children: [
                 btn(Icons.view_carousel_outlined, 36, _toggleTheme),
                 btn(Icons.settings, 36, _openSettings),
+                btn(Icons.navigation_rounded, 36, _openNavigation),
                 const SizedBox(width: 12),
                 btn(Icons.skip_previous_rounded, 56, model.previous),
                 btn(
@@ -1418,14 +1655,14 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     );
   }
 
-  Widget _seekBar() {
+  Widget _seekBar({double width = 560}) {
     return AnimatedBuilder(
       animation: _tick,
       builder: (context, _) {
         final d = model.durationMs;
         final frac = d > 0 ? (model.positionMs / d).clamp(0.0, 1.0).toDouble() : 0.0;
         return SizedBox(
-          width: 560,
+          width: width,
           child: SliderTheme(
             data: SliderTheme.of(context).copyWith(
               trackHeight: 6,
