@@ -11,7 +11,17 @@ class AppSettings extends ChangeNotifier {
     'VHS',
     'Edge to Edge',
     'Drive',
+    'Fan',
+    'Diagonal',
+    'Record Cut',
+    'Typo',
   ];
+
+  /// Theme numbers, so the screen does not rely on bare digits.
+  static const int tFan = 5;
+  static const int tDiagonal = 6;
+  static const int tRecord = 7;
+  static const int tTypo = 8;
   static const accentNames = [
     'Auto (from art)',
     'Vaporwave',
@@ -37,7 +47,7 @@ class AppSettings extends ChangeNotifier {
 
   static const barCounts = [32, 48, 64, 96];
 
-  int theme = 0; // 0 Focused, 1 Side by Side, 2 VHS, 3 Edge to Edge, 4 Drive
+  int theme = 0; // index into themeNames
   bool visualizer = true;
   double sensitivity = 1.0; // 0.5 .. 1.5
   int vizStyle = 0; // Focused theme: 0 ring, 1 bars
@@ -68,6 +78,7 @@ class AppSettings extends ChangeNotifier {
   bool driveSwap = false; // Drive theme: navigation card on the left
   double driveCardWidth = 0.5; // Drive theme: card width, 0.35 .. 0.65
   int graceSec = 60; // pause shorter than this is the same listening session
+  int quietMin = 10; // minutes VYBE stays quiet after the person leaves it
   bool allowVideo = false; // let video apps open VYBE
   bool allowNavAudio = false; // let navigation audio open VYBE
   bool avoidNav = true; // never open VYBE while navigation is active
@@ -77,7 +88,7 @@ class AppSettings extends ChangeNotifier {
 
   Future<void> load() async {
     final p = await SharedPreferences.getInstance();
-    theme = _int(p, 'theme', 0, 0, 4);
+    theme = _int(p, 'theme', 0, 0, themeNames.length - 1);
     visualizer = p.getBool('visualizer') ?? true;
     sensitivity = (p.getDouble('sensitivity') ?? 1.0).clamp(0.5, 1.5).toDouble();
     vizStyle = _int(p, 'vizStyle', 0, 0, 1);
@@ -113,6 +124,8 @@ class AppSettings extends ChangeNotifier {
         (p.getDouble('driveCardWidth') ?? 0.5).clamp(0.35, 0.65).toDouble();
     final g = p.getInt('graceSec') ?? 60;
     graceSec = const [30, 60, 300].contains(g) ? g : 60;
+    final q = p.getInt('quietMin') ?? 10;
+    quietMin = const [0, 5, 10, 30].contains(q) ? q : 10;
     allowVideo = p.getBool('allowVideo') ?? false;
     allowNavAudio = p.getBool('allowNavAudio') ?? false;
     avoidNav = p.getBool('avoidNav') ?? true;
@@ -156,6 +169,7 @@ class AppSettings extends ChangeNotifier {
     await p.setBool('driveSwap', driveSwap);
     await p.setDouble('driveCardWidth', driveCardWidth);
     await p.setInt('graceSec', graceSec);
+    await p.setInt('quietMin', quietMin);
     await p.setBool('allowVideo', allowVideo);
     await p.setBool('allowNavAudio', allowNavAudio);
     await p.setBool('avoidNav', avoidNav);

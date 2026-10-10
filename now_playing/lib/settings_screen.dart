@@ -199,6 +199,12 @@ class SettingsScreen extends StatelessWidget {
         const [30, 60, 300].indexOf(s.graceSec).clamp(0, 2).toInt(),
         (i) => s.update(() => s.graceSec = const [30, 60, 300][i]),
       ),
+      _choices(
+        'After I leave VYBE, do not open it by itself for',
+        const ['Off', '5 minutes', '10 minutes', '30 minutes'],
+        const [0, 5, 10, 30].indexOf(s.quietMin).clamp(0, 3).toInt(),
+        (i) => s.update(() => s.quietMin = const [0, 5, 10, 30][i]),
+      ),
       _switch("Don't open while navigation is guiding",
           'Looks for the navigation notification, so VYBE never covers your map',
           s.avoidNav, (v) => s.update(() => s.avoidNav = v)),

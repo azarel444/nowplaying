@@ -170,6 +170,11 @@ class MediaListenerService : NotificationListenerService() {
         val kind = PlayerFilter.classify(this, pkg, c.metadata)
         if (!PlayerFilter.allowed(prefs, pkg, kind)) return
         if (MainActivity.visible) return
+        // After the person leaves VYBE for another app, stay out of the way
+        // for a while, even if a new song or album starts playing.
+        val quietMs = prefs.getInt("quietMin", 10) * 60000L
+        val left = MainActivity.leftAt
+        if (quietMs > 0 && left > 0 && now - left < quietMs) return
         if (prefs.getBoolean("avoidNav", true) && navigationActive(prefs)) return
         if (inCall()) return
         if (now - lastLaunch < 3000) return

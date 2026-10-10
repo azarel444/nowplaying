@@ -317,3 +317,82 @@ class DownBarsPainter extends CustomPainter {
   bool shouldRepaint(DownBarsPainter old) =>
       old.palette != palette || old.count != count || old.gain != gain;
 }
+
+/// A closed circle of bars growing outward from [innerRadius], used around
+/// the record in the Record Cut theme. Bass is at the top, treble at the
+/// bottom, mirrored left and right.
+class FullRingPainter extends CustomPainter {
+  final SpectrumSim sim;
+  final ArtPalette palette;
+  final double innerRadius;
+  final double maxLen;
+  final int count;
+  final double gain;
+
+  List<double>? _cos;
+  List<double>? _sin;
+  List<int>? _idx;
+  List<Color>? _colors;
+
+  FullRingPainter({
+    required this.sim,
+    required this.palette,
+    required this.innerRadius,
+    required this.maxLen,
+    required this.count,
+    required this.gain,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
+
+  void _prepare() {
+    if (_cos != null) return;
+    final cs = List<double>.filled(count, 0.0);
+    final sn = List<double>.filled(count, 0.0);
+    final ix = List<int>.filled(count, 0);
+    final cl = List<Color>.filled(count, Colors.white);
+    for (int i = 0; i < count; i++) {
+      final f = i / count;
+      final ang = math.pi / 2 + 2 * math.pi * f;
+      final u = (f - 0.5).abs() * 2; // 0 at the top, 1 at the bottom
+      cs[i] = math.cos(ang);
+      sn[i] = math.sin(ang);
+      ix[i] = (u * (SpectrumSim.bars - 1)).round();
+      cl[i] = palette.at((1 + math.cos(ang)) / 2);
+    }
+    _cos = cs;
+    _sin = sn;
+    _idx = ix;
+    _colors = cl;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    _prepare();
+    final cs = _cos!, sn = _sin!, ix = _idx!, cl = _colors!;
+    final c = size.center(Offset.zero);
+    final width =
+        math.max(2.0, 2 * math.pi * innerRadius / count * 0.55).toDouble();
+    final bar = Paint()
+      ..strokeCap = StrokeCap.round
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = width;
+    for (int i = 0; i < count; i++) {
+      final len = width + maxLen * sim.level(ix[i], gain);
+      bar.color = cl[i];
+      canvas.drawLine(
+        Offset(c.dx + cs[i] * innerRadius, c.dy + sn[i] * innerRadius),
+        Offset(c.dx + cs[i] * (innerRadius + len),
+            c.dy + sn[i] * (innerRadius + len)),
+        bar,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(FullRingPainter old) =>
+      old.palette != palette ||
+      old.innerRadius != innerRadius ||
+      old.maxLen != maxLen ||
+      old.count != count ||
+      old.gain != gain;
+}

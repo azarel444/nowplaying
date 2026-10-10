@@ -12,6 +12,7 @@ import 'palette.dart';
 import 'settings.dart';
 import 'settings_screen.dart';
 import 'spectrum.dart';
+import 'theme_parts.dart';
 
 class NowPlayingScreen extends StatefulWidget {
   const NowPlayingScreen({super.key});
@@ -52,6 +53,13 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
   final ripples = RippleState();
   final _artKey = GlobalKey(); // lets rings and rays find the cover
   final _navKey = GlobalKey(); // the navigation card in the Drive theme
+  // Record Cut: the spin is kept apart from the layout so only a cached
+  // layer is turned each frame.
+  final _recAngle = ValueNotifier<double>(0); // turns, 0..1
+  double _recSpeed = 0; // turns per second
+  double _recTurns = 0;
+  static const double _labelFrac = 0.40; // label size / record size
+
   ArtPalette? _lastArtPalette;
   double _artNullSince = -1;
 
@@ -108,6 +116,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     _hideTimer?.cancel();
     _clockTimer?.cancel();
     _noise?.dispose();
+    _recAngle.dispose();
     model.dispose();
     super.dispose();
   }
@@ -136,6 +145,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
       boot: settings.bootStart,
       music: settings.musicStart,
       graceSec: settings.graceSec,
+      quietMin: settings.quietMin,
       allowVideo: settings.allowVideo,
       allowNav: settings.allowNavAudio,
       avoidNav: settings.avoidNav,
@@ -218,6 +228,22 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     fxClock.bass = bass;
     ripples.update(_time, bass, settings.fxRipples && model.playing);
 
+    // Record Cut only: 33 1/3 rpm is one turn every 1.8 seconds. It speeds up
+    // over about 0.75 s, slows over about 1.5 s, and keeps its angle.
+    if (settings.theme == AppSettings.tRecord) {
+      const full = 1 / 1.8;
+      final target = model.playing ? full : 0.0;
+      if (_recSpeed < target) {
+        _recSpeed = math.min(target, _recSpeed + full / 0.75 * dt);
+      } else if (_recSpeed > target) {
+        _recSpeed = math.max(target, _recSpeed - full / 1.5 * dt);
+      }
+      if (_recSpeed > 0) {
+        _recTurns = (_recTurns + _recSpeed * dt) % 1.0;
+        _recAngle.value = _recTurns;
+      }
+    }
+
     _slowAcc += dt;
     if (_slowAcc >= 0.1) {
       _slowAcc = 0;
@@ -234,8 +260,42 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     );
   }
 
+  /// Lists every theme so one can be chosen directly.
+  Future<void> _pickTheme() async {
+    final choice = await showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Theme'),
+        children: [
+          for (int i = 0; i < AppSettings.themeNames.length; i++)
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(ctx, i),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      i == settings.theme
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_unchecked,
+                      color: i == settings.theme ? _palette.a : Colors.white38,
+                    ),
+                    const SizedBox(width: 14),
+                    Text(AppSettings.themeNames[i],
+                        style: const TextStyle(fontSize: 22)),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (choice != null) settings.update(() => settings.theme = choice);
+    _poke();
+  }
+
   void _toggleTheme() {
-    settings.update(() => settings.theme = (settings.theme + 1) % 5);
+    settings.update(() => settings.theme = (settings.theme + 1) % AppSettings.themeNames.length);
     _poke();
   }
 
@@ -297,7 +357,15 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
                 // then song info and lyrics) when the screen gets narrow.
                 final narrow = w < h * 1.3;
                 final Widget layout;
-                if (settings.theme == 4) {
+                if (settings.theme == AppSettings.tRecord) {
+                  layout = _recordLayout(w, h, narrow);
+                } else if (settings.theme == AppSettings.tFan) {
+                  layout = _fanLayout(w, h, narrow);
+                } else if (settings.theme == AppSettings.tDiagonal) {
+                  layout = _diagonalLayout(w, h, narrow);
+                } else if (settings.theme == AppSettings.tTypo) {
+                  layout = _typoLayout(w, h, narrow);
+                } else if (settings.theme == 4) {
                   layout = _driveLayout(w, h, narrow);
                 } else if (settings.theme == 3) {
                   layout = narrow ? _edgeNarrow(w, h) : _edgeLayout(w, h);
@@ -1148,6 +1216,697 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
     );
   }
 
+  // ----------------------------------------------------- v1.6 themes
+
+  /// Black and white, and dimmed: the big copy of the cover behind things.
+  static const _grayDark = ColorFilter.matrix(<double>[
+    0.117, 0.393, 0.040, 0, 0, //
+    0.117, 0.393, 0.040, 0, 0, //
+    0.117, 0.393, 0.040, 0, 0, //
+    0, 0, 0, 1, 0, //
+  ]);
+
+  Widget _vBars() => RepaintBoundary(
+        child: CustomPaint(
+          painter: VerticalBarsPainter(
+            sim: sim,
+            palette: _palette,
+            count: settings.barCount,
+            gain: settings.sensitivity,
+            repaint: _tick,
+          ),
+        ),
+      );
+
+  /// Mirrors a child left to right, so bars that grow from the left edge
+  /// can grow from the right edge instead.
+  Widget _flipX(Widget child) => Transform(
+        alignment: Alignment.center,
+        transform: Matrix4.diagonal3Values(-1.0, 1.0, 1.0),
+        child: child,
+      );
+
+  // ------------------------------------------------------------ record cut
+
+  /// The turning part: the cover in black and white as the record surface,
+  /// grooves over it, and the cover in color as the label. Built once and
+  /// handed to the rotation as a cached child.
+  Widget _vinylFace(double d) {
+    final art = model.art;
+    final lab = d * _labelFrac;
+    final Widget surface = art == null
+        ? const DecoratedBox(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(
+                colors: [Color(0xFF23262E), Color(0xFF0B0C10)],
+              ),
+            ),
+          )
+        : ClipOval(
+            child: ColorFiltered(
+              colorFilter: _grayDark,
+              child: Image.memory(
+                art.bytes,
+                width: d,
+                height: d,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+                filterQuality: FilterQuality.medium,
+              ),
+            ),
+          );
+    final ring = math.max(2.0, d * 0.007).toDouble();
+    return SizedBox(
+      width: d,
+      height: d,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Positioned.fill(child: surface),
+          Positioned.fill(
+            child: CustomPaint(
+              painter: VinylGroovesPainter(labelFrac: _labelFrac),
+            ),
+          ),
+          Container(
+            width: lab,
+            height: lab,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF111827),
+              border: Border.all(color: Colors.white, width: ring),
+            ),
+            child: ClipOval(
+              child: art == null
+                  ? Center(child: _brandIcon(lab * 0.7))
+                  : Image.memory(
+                      art.bytes,
+                      width: lab,
+                      height: lab,
+                      fit: BoxFit.cover,
+                      gaplessPlayback: true,
+                      filterQuality: FilterQuality.medium,
+                    ),
+            ),
+          ),
+          Container(
+            width: d * 0.055,
+            height: d * 0.055,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF050608),
+              border: Border.all(color: Colors.white, width: math.max(1.5, d * 0.005).toDouble()),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The record: a shadow, the turning face, and a light that stays still.
+  Widget _vinyl(double d) {
+    final face = RepaintBoundary(child: _vinylFace(d));
+    return SizedBox(
+      width: d,
+      height: d,
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.6),
+                    blurRadius: d * 0.07,
+                    offset: Offset(0, d * 0.02),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Positioned.fill(
+            child: AnimatedBuilder(
+              animation: _recAngle,
+              child: face,
+              builder: (context, c) => Transform.rotate(
+                angle: _recAngle.value * 2 * math.pi,
+                child: c,
+              ),
+            ),
+          ),
+          const Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(painter: VinylLightPainter()),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// The record with the visualizer running around its edge.
+  Widget _recordBlock(double d) {
+    final box = d * 1.28;
+    return SizedBox(
+      width: box,
+      height: box,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          if (settings.visualizer)
+            Positioned.fill(
+              child: RepaintBoundary(
+                child: CustomPaint(
+                  painter: FullRingPainter(
+                    sim: sim,
+                    palette: _palette,
+                    innerRadius: d / 2 * 1.04,
+                    maxLen: d * 0.12,
+                    count: settings.barCount,
+                    gain: settings.sensitivity,
+                    repaint: _tick,
+                  ),
+                ),
+              ),
+            ),
+          GestureDetector(
+            key: _artKey,
+            behavior: HitTestBehavior.opaque,
+            onTap: _openPlayer,
+            child: _vinyl(d),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _recordLayout(double w, double h, bool narrow) {
+    if (narrow) {
+      final d = math.min(w * 0.6, h * 0.34).toDouble();
+      return Center(
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: SizedBox(
+            width: w * 0.9,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _recordBlock(d),
+                SizedBox(height: h * 0.02),
+                _title(h * 0.05, Alignment.center, false),
+                SizedBox(height: h * 0.01),
+                _artist(h * 0.022, Alignment.center, false),
+                if (_hasLyrics) ...[
+                  SizedBox(height: h * 0.02),
+                  _lyricBlock(h * 0.75, Alignment.center, vhs: false),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final d = math.min(h * 0.74, w * 0.4).toDouble();
+    final box = d * 1.28;
+    return Stack(
+      children: [
+        Positioned(
+          right: w * 0.03,
+          top: (h - box) / 2,
+          width: box,
+          height: box,
+          child: _recordBlock(d),
+        ),
+        Positioned(
+          left: w * 0.06,
+          right: w * 0.05 + box,
+          top: 0,
+          bottom: 0,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _artist(h * 0.032, Alignment.centerLeft, false),
+              SizedBox(height: h * 0.012),
+              _title(h * 0.085, Alignment.centerLeft, false),
+              if (model.album.isNotEmpty && model.album != model.title) ...[
+                SizedBox(height: h * 0.012),
+                _fit(_albumText(h * 0.028), Alignment.centerLeft),
+              ],
+              if (_hasLyrics) ...[
+                SizedBox(height: h * 0.05),
+                _lyricBlock(h, Alignment.centerLeft, vhs: false),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ------------------------------------------------------------------- fan
+
+  /// Three covers fanned out, the sharp one in front. The box is laid out so
+  /// the front cover's top-left corner is at (0, 0.25 s).
+  Widget _fanCards(double s) {
+    final yf = s * 0.25;
+    Widget back(double left, double top, double deg, double alpha) =>
+        Positioned(
+          left: left,
+          top: top,
+          child: Transform.rotate(
+            angle: deg * math.pi / 180,
+            alignment: Alignment.topLeft,
+            child: Opacity(
+              opacity: alpha,
+              child: ColorFiltered(
+                colorFilter:
+                    const ColorFilter.mode(Color(0x59000000), BlendMode.srcATop),
+                child: _artContent(s),
+              ),
+            ),
+          ),
+        );
+    return SizedBox(
+      width: s * 1.45,
+      height: s * 1.3,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          back(s * 0.5, yf - s * 0.246, 21, 0.6),
+          back(s * 0.237, yf - s * 0.175, 11, 0.8),
+          Positioned(left: 0, top: yf, child: _front(s, false)),
+        ],
+      ),
+    );
+  }
+
+  Widget _fanLayout(double w, double h, bool narrow) {
+    if (narrow) {
+      final s = math.min(w * 0.46, h * 0.27).toDouble();
+      return Center(
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: SizedBox(
+            width: w * 0.9,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _fanCards(s),
+                SizedBox(height: h * 0.03),
+                _bars(h * 0.09),
+                SizedBox(height: h * 0.02),
+                _title(h * 0.05, Alignment.center, false),
+                SizedBox(height: h * 0.01),
+                _artist(h * 0.022, Alignment.center, false),
+                if (_hasLyrics) ...[
+                  SizedBox(height: h * 0.02),
+                  _lyricBlock(h * 0.75, Alignment.center, vhs: false),
+                ],
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final s = math.min(w * 0.37, h * 0.8).toDouble();
+    final edge = w * 0.105;
+    return Stack(
+      children: [
+        Positioned(left: 0, top: h - s * 1.25, child: _fanCards(s)),
+        if (settings.visualizer)
+          Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            width: edge,
+            child: _flipX(_vBars()),
+          ),
+        Positioned(
+          left: w * 0.58,
+          right: edge + w * 0.03,
+          top: 0,
+          bottom: 0,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _artist(h * 0.032, Alignment.centerLeft, false),
+              SizedBox(height: h * 0.012),
+              _title(h * 0.085, Alignment.centerLeft, false),
+              if (model.album.isNotEmpty && model.album != model.title) ...[
+                SizedBox(height: h * 0.012),
+                _fit(_albumText(h * 0.028), Alignment.centerLeft),
+              ],
+              if (_hasLyrics) ...[
+                SizedBox(height: h * 0.05),
+                _lyricBlock(h, Alignment.centerLeft, vhs: false),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // -------------------------------------------------------------- diagonal
+
+  /// A black and white copy of the cover fills one side of a diagonal cut
+  /// with a glowing white edge. The sharp cover floats on it, and the song
+  /// info sits on the blurred side.
+  Widget _diagonalLayout(double w, double h, bool narrow) {
+    final List<Offset> poly;
+    final Offset a;
+    final Offset b;
+    if (narrow) {
+      a = Offset(0, h * 0.55);
+      b = Offset(w, h * 0.30);
+      poly = [Offset.zero, Offset(w, 0), b, a];
+    } else {
+      a = Offset(w * 0.703, 0);
+      b = Offset(0, h);
+      poly = [Offset.zero, a, b];
+    }
+    final art = model.art;
+    final gray = ClipPath(
+      clipper: PolyClipper(poly),
+      child: art == null
+          ? const ColoredBox(color: Color(0xFF14161B))
+          : SizedBox.expand(
+              child: ColorFiltered(
+                colorFilter: _grayDark,
+                child: Image.memory(
+                  art.bytes,
+                  fit: BoxFit.cover,
+                  gaplessPlayback: true,
+                  filterQuality: FilterQuality.medium,
+                ),
+              ),
+            ),
+    );
+    final line = IgnorePointer(
+      child: CustomPaint(painter: CutLinePainter(a: a, b: b)),
+    );
+
+    if (narrow) {
+      final s = math.min(w * 0.56, h * 0.30).toDouble();
+      return Stack(
+        fit: StackFit.expand,
+        children: [
+          gray,
+          line,
+          Positioned(left: (w - s) / 2, top: h * 0.04, child: _front(s, false)),
+          Positioned(
+            left: w * 0.08,
+            right: w * 0.08,
+            top: h * 0.58,
+            bottom: h * 0.04,
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _title(h * 0.05, Alignment.center, false),
+                SizedBox(height: h * 0.01),
+                _artist(h * 0.022, Alignment.center, false),
+                if (_hasLyrics) ...[
+                  SizedBox(height: h * 0.02),
+                  _lyricBlock(h * 0.75, Alignment.center, vhs: false),
+                ],
+                SizedBox(height: h * 0.02),
+                _bars(h * 0.08),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+    final s = math.min(w * 0.37, h * 0.8).toDouble();
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        gray,
+        line,
+        Positioned(left: w * 0.046, top: (h - s) / 2, child: _front(s, false)),
+        Positioned(
+          left: w * 0.47,
+          right: w * 0.05,
+          top: h * 0.36,
+          bottom: h * 0.07,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _artist(h * 0.032, Alignment.centerLeft, false),
+              SizedBox(height: h * 0.012),
+              _title(h * 0.085, Alignment.centerLeft, false),
+              if (model.album.isNotEmpty && model.album != model.title) ...[
+                SizedBox(height: h * 0.012),
+                _fit(_albumText(h * 0.028), Alignment.centerLeft),
+              ],
+              if (_hasLyrics) ...[
+                SizedBox(height: h * 0.03),
+                _lyricBlock(h, Alignment.centerLeft, vhs: false),
+              ],
+              SizedBox(height: h * 0.03),
+              _bars(h * 0.16),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ------------------------------------------------------------------ typo
+
+  Widget _typoInfo(double h, {required bool center}) {
+    final ta = center ? TextAlign.center : TextAlign.right;
+    final cross = center ? CrossAxisAlignment.center : CrossAxisAlignment.end;
+    final artistSize = center ? h * 0.022 : h * 0.034;
+    final albumSize = center ? h * 0.018 : h * 0.026;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: cross,
+      children: [
+        Text(
+          _titleStr,
+          textAlign: ta,
+          maxLines: 3,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: center ? h * 0.06 : h * 0.115,
+            fontWeight: FontWeight.w300,
+            height: 1.05,
+            color: Colors.white,
+          ),
+        ),
+        SizedBox(height: h * 0.025),
+        Text(
+          _artistStr.toUpperCase(),
+          textAlign: ta,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: artistSize,
+            letterSpacing: artistSize * 0.3,
+            color: Colors.white70,
+          ),
+        ),
+        if (model.album.isNotEmpty && model.album != model.title) ...[
+          SizedBox(height: h * 0.012),
+          Text(
+            model.album.toUpperCase(),
+            textAlign: ta,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: albumSize,
+              letterSpacing: albumSize * 0.3,
+              color: Colors.white38,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  /// Lyrics set large: the line before, the current line, the line after.
+  Widget _typoLyrics(double h, {required bool center}) {
+    final ta = center ? TextAlign.center : TextAlign.left;
+    final cross = center ? CrossAxisAlignment.center : CrossAxisAlignment.start;
+    if (!_hasLyrics) {
+      return Text(
+        settings.lyrics
+            ? '♪'
+            : 'Lyrics are off.\nTurn them on in Settings.',
+        textAlign: ta,
+        style: TextStyle(
+          fontSize: center ? h * 0.026 : h * 0.036,
+          color: Colors.white38,
+          height: 1.3,
+        ),
+      );
+    }
+    final big = center ? h * 0.04 : h * 0.07;
+    return AnimatedBuilder(
+      animation: _slow,
+      builder: (context, _) {
+        final i = model.lyricIndexAt(model.positionMs + 150);
+        return AnimatedSwitcher(
+          duration: const Duration(milliseconds: 300),
+          layoutBuilder: (current, previous) => Stack(
+            alignment: center ? Alignment.topCenter : Alignment.topLeft,
+            children: [...previous, if (current != null) current],
+          ),
+          child: Column(
+            key: ValueKey<int>(i),
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: cross,
+            children: [
+              Text(
+                _lyricAt(-1),
+                textAlign: ta,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: big * 0.55, color: Colors.white30),
+              ),
+              SizedBox(height: big * 0.25),
+              Text(
+                _lyricAt(0),
+                textAlign: ta,
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: big,
+                  fontWeight: FontWeight.w400,
+                  height: 1.15,
+                  color: Colors.white,
+                ),
+              ),
+              SizedBox(height: big * 0.25),
+              Text(
+                _lyricAt(1),
+                textAlign: ta,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: big * 0.6, color: Colors.white38),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// A text-focused theme: no cover in front, only the blurred cover behind.
+  /// Bars run down both edges, and a divider that fades out at both ends
+  /// separates the song info (left) from the lyrics (right).
+  Widget _typoLayout(double w, double h, bool narrow) {
+    final edge = narrow ? w * 0.07 : w * 0.105;
+    final strips = <Widget>[
+      if (settings.visualizer) ...[
+        Positioned(left: 0, top: 0, bottom: 0, width: edge, child: _vBars()),
+        Positioned(
+          right: 0,
+          top: 0,
+          bottom: 0,
+          width: edge,
+          child: _flipX(_vBars()),
+        ),
+      ],
+    ];
+    const fade = Color(0xCCFFFFFF);
+    const clear = Color(0x00FFFFFF);
+    if (narrow) {
+      final cw = w - 2 * (edge + w * 0.04);
+      return Stack(
+        children: [
+          ...strips,
+          Positioned(
+            left: edge + w * 0.04,
+            right: edge + w * 0.04,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: SizedBox(
+                  width: cw,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _typoInfo(h, center: true),
+                      SizedBox(height: h * 0.03),
+                      const SizedBox(
+                        height: 3,
+                        width: double.infinity,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: [clear, fade, fade, clear],
+                              stops: [0.0, 0.2, 0.8, 1.0],
+                            ),
+                          ),
+                        ),
+                      ),
+                      SizedBox(height: h * 0.03),
+                      _typoLyrics(h, center: true),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+    final side = edge + w * 0.03;
+    return Stack(
+      children: [
+        ...strips,
+        Positioned(
+          left: side,
+          right: side,
+          top: 0,
+          bottom: 0,
+          child: Row(
+            children: [
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: _typoInfo(h, center: false),
+                ),
+              ),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: w * 0.03),
+                child: SizedBox(
+                  width: 3,
+                  height: h * 0.82,
+                  child: const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [clear, fade, fade, clear],
+                        stops: [0.0, 0.2, 0.8, 1.0],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: _typoLyrics(h, center: false),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   // ------------------------------------------------------------------ lyrics
 
   bool get _hasLyrics =>
@@ -1606,6 +2365,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen>
               mainAxisSize: MainAxisSize.min,
               children: [
                 btn(Icons.view_carousel_outlined, 36, _toggleTheme),
+                btn(Icons.grid_view_rounded, 36, _pickTheme),
                 btn(Icons.settings, 36, _openSettings),
                 btn(Icons.navigation_rounded, 36, _openNavigation),
                 const SizedBox(width: 12),

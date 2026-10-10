@@ -110,6 +110,7 @@ class MainActivity : FlutterActivity() {
                         .putBoolean("openOnBoot", call.argument<Boolean>("boot") ?: false)
                         .putBoolean("openOnMusic", call.argument<Boolean>("music") ?: false)
                         .putInt("graceSec", call.argument<Int>("graceSec") ?: 60)
+                        .putInt("quietMin", call.argument<Int>("quietMin") ?: 10)
                         .putBoolean("allowVideo", call.argument<Boolean>("allowVideo") ?: false)
                         .putBoolean("allowNav", call.argument<Boolean>("allowNav") ?: false)
                         .putBoolean("avoidNav", call.argument<Boolean>("avoidNav") ?: true)
@@ -523,6 +524,9 @@ class MainActivity : FlutterActivity() {
 
     override fun onStop() {
         visible = false
+        // Remember when the person left VYBE, so it does not pop back up by
+        // itself while they are busy in another app.
+        leftAt = SystemClock.elapsedRealtime()
         stopVisualizer()
         super.onStop()
     }
@@ -530,6 +534,10 @@ class MainActivity : FlutterActivity() {
     companion object {
         @Volatile
         var visible = false
+
+        /** When VYBE last left the screen (elapsed realtime), 0 if never. */
+        @Volatile
+        var leftAt = 0L
 
         private const val BANDS = 96
         private const val REQ_AUDIO = 4711
